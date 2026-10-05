@@ -3,6 +3,7 @@ export type VideoEffect =
   | { name: "sepia" }
   | { name: "speed"; value: number }
   | { name: "hue"; value: number }
+  | { name: "pitch"; pitches: [number, number, number] }
   | { name: "mirrorhl" }
   | { name: "mirrorhr" };
 
@@ -21,14 +22,12 @@ export function parseEffectChain(input: string): VideoEffect[] {
   }
 
   return parts.map((part) => {
-    const match = /^([a-z]+)(?:[=:]([+-]?(?:\d+(?:\.\d*)?|\.\d+)))?$/.exec(
-      part,
-    );
+    const match = /^([a-z]+)(?:([=:])(.*))?$/.exec(part);
     if (!match) {
       throw new Error(`I don't recognize the effect "${part}".`);
     }
 
-    const [, name, rawValue] = match;
+    const [, name, separator, rawValue] = match;
     if (name === "grayscale" || name === "sepia" || name === "mirrorhl" || name === "mirrorhr") {
       if (rawValue !== undefined) {
         throw new Error(`The ${name} effect does not take a value.`);
@@ -36,7 +35,32 @@ export function parseEffectChain(input: string): VideoEffect[] {
       return { name };
     }
 
+    if (name === "pitch") {
+      if (separator !== "=" || rawValue === undefined) {
+        throw new Error("Use pitch=<first>;<second>;<third> for pitch layers.");
+      }
+      const rawPitches = rawValue.split(";");
+      if (rawPitches.length !== 3) {
+        throw new Error("Pitch requires exactly three semitone values separated by semicolons.");
+      }
+
+      const pitches = rawPitches.map((rawPitch) => {
+        if (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/.test(rawPitch)) {
+          throw new Error("Each pitch value must be a number of semitones.");
+        }
+        const pitch = Number(rawPitch);
+        if (!Number.isFinite(pitch) || pitch < -24 || pitch > 24) {
+          throw new Error("Each pitch shift must be between -24 and 24 semitones.");
+        }
+        return pitch;
+      }) as [number, number, number];
+      return { name, pitches };
+    }
+
     if (name === "speed") {
+      if (rawValue === "") {
+        throw new Error("Speed needs a value between 0.25 and 4.0.");
+      }
       const value = rawValue === undefined ? DEFAULT_SPEED : Number(rawValue);
       if (!Number.isFinite(value) || value < 0.25 || value > 4) {
         throw new Error("Speed must be between 0.25 and 4.0.");
@@ -45,6 +69,9 @@ export function parseEffectChain(input: string): VideoEffect[] {
     }
 
     if (name === "hue") {
+      if (rawValue === "") {
+        throw new Error("Hue needs a value between -360 and 360 degrees.");
+      }
       const value = rawValue === undefined ? DEFAULT_HUE : Number(rawValue);
       if (!Number.isFinite(value) || value < -360 || value > 360) {
         throw new Error("Hue must be between -360 and 360 degrees.");
@@ -75,13 +102,17 @@ function audioTempoFilters(speed: number): string[] {
   return filters;
 }
 
+export function buildAudioTempoFilter(speed: number): string {
+  return audioTempoFilters(speed).join(",");
+}
+
 export function buildFfmpegArguments(
   inputPath: string,
   outputPath: string,
   effects: VideoEffect[],
+  processedAudioPath?: string,
 ): string[] {
   const graph: string[] = [];
-  const speedFilters: string[] = [];
   let currentLabel = "0:v";
   let labelIndex = 0;
 
@@ -103,10 +134,11 @@ export function buildFfmpegArguments(
         break;
       case "speed":
         addFilter(`setpts=PTS/${effect.value}`);
-        speedFilters.push(...audioTempoFilters(effect.value));
         break;
       case "hue":
         addFilter(`hue=h=${effect.value}`);
+        break;
+      case "pitch":
         break;
       case "mirrorhl":
       case "mirrorhr": {
@@ -144,6 +176,13 @@ export function buildFfmpegArguments(
     "-y",
     "-i",
     inputPath,
+  ];
+
+  if (processedAudioPath) {
+    args.push("-i", processedAudioPath);
+  }
+
+  args.push(
     "-filter_complex_threads",
     "2",
     "-filter_complex",
@@ -151,12 +190,8 @@ export function buildFfmpegArguments(
     "-map",
     `[${paddedLabel}]`,
     "-map",
-    "0:a?",
-  ];
-
-  if (speedFilters.length > 0) {
-    args.push("-filter:a", speedFilters.join(","));
-  }
+    processedAudioPath ? "1:a:0" : "0:a?",
+  );
 
   args.push(
     "-c:v",

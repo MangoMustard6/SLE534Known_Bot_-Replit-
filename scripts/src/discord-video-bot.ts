@@ -5,10 +5,11 @@ import {
   Partials,
   type Message,
 } from "discord.js";
-import { spawn } from "node:child_process";
 import { open, mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { extname, join } from "node:path";
+import { processAudioEffects } from "./audio-processing.js";
+import { runProcess } from "./process-runner.js";
 import { buildFfmpegArguments, parseEffectChain } from "./video-filters.js";
 
 const PREFIX = "534!";
@@ -33,56 +34,13 @@ function usageMessage(): string {
   return [
     "Attach a video and use `534!edit` followed by effects separated with `|`.",
     "",
-    "Effects: `grayscale`, `speed`, `sepia`, `hue`, `mirrorhl`, `mirrorhr`",
+    "Effects: `grayscale`, `speed`, `sepia`, `hue`, `pitch`, `mirrorhl`, `mirrorhr`",
     "`speed` defaults to 1.5x; set it with `speed=2` (0.25–4).",
     "`hue` defaults to 90 degrees; set it with `hue=-45` (-360–360).",
+    "`pitch=+3;0;-3` mixes three pitch-shifted audio layers (semitones, -24 to +24).",
     "",
-    "Example: `534!edit grayscale|speed=1.25|sepia`",
+    "Example: `534!edit grayscale|pitch=+3;0;-3|speed=1.25`",
   ].join("\n");
-}
-
-function runProcess(
-  command: string,
-  args: string[],
-  timeoutMs: number,
-): Promise<{ stdout: string; stderr: string }> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
-    let stdout = "";
-    let stderr = "";
-    let settled = false;
-
-    const timeout = setTimeout(() => {
-      child.kill("SIGKILL");
-      finish(new Error(`${command} exceeded its time limit.`));
-    }, timeoutMs);
-
-    const finish = (error?: Error, exitCode?: number | null) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
-      if (error) {
-        reject(error);
-      } else if (exitCode !== 0) {
-        reject(
-          new Error(stderr.trim().slice(-2_000) || `${command} failed.`),
-        );
-      } else {
-        resolve({ stdout, stderr });
-      }
-    };
-
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => {
-      stdout = `${stdout}${chunk}`.slice(-8_000);
-    });
-    child.stderr.on("data", (chunk: string) => {
-      stderr = `${stderr}${chunk}`.slice(-8_000);
-    });
-    child.on("error", (error) => finish(error));
-    child.on("close", (code) => finish(undefined, code));
-  });
 }
 
 async function downloadAttachment(url: string, destination: string) {
@@ -111,7 +69,7 @@ async function downloadAttachment(url: string, destination: string) {
   }
 }
 
-async function validateVideo(inputPath: string) {
+async function validateVideo(inputPath: string): Promise<boolean> {
   const { stdout: streamType } = await runProcess(
     "ffprobe",
     [
@@ -151,6 +109,23 @@ async function validateVideo(inputPath: string) {
   if (duration > MAX_DURATION_SECONDS) {
     throw new Error("Videos must be 3 minutes or shorter.");
   }
+
+  const { stdout: audioStreamType } = await runProcess(
+    "ffprobe",
+    [
+      "-v",
+      "error",
+      "-select_streams",
+      "a:0",
+      "-show_entries",
+      "stream=codec_type",
+      "-of",
+      "csv=p=0",
+      inputPath,
+    ],
+    15_000,
+  );
+  return audioStreamType.trim() === "audio";
 }
 
 function isVideoAttachment(attachment: {
@@ -178,10 +153,16 @@ async function editAttachment(
 
   try {
     await downloadAttachment(attachment.url, inputPath);
-    await validateVideo(inputPath);
+    const hasAudio = await validateVideo(inputPath);
+    const processedAudioPath = await processAudioEffects(
+      inputPath,
+      directory,
+      effects,
+      hasAudio,
+    );
     await runProcess(
       "ffmpeg",
-      buildFfmpegArguments(inputPath, outputPath, effects),
+      buildFfmpegArguments(inputPath, outputPath, effects, processedAudioPath),
       240_000,
     );
 

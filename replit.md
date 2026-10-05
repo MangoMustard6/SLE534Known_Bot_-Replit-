@@ -24,6 +24,8 @@ A prefix-based Discord bot that edits video attachments with FFmpeg using ordere
 ## Where things live
 
 - `scripts/src/discord-video-bot.ts` — Discord command handling and FFmpeg job lifecycle
+- `scripts/src/audio-processing.ts` — speed and Rubber Band pitch processing for audio
+- `scripts/src/process-runner.ts` — bounded external process execution
 - `scripts/src/video-filters.ts` — effect parsing and FFmpeg filter graph generation
 - `scripts/DISCORD_VIDEO_BOT.md` — command reference and setup requirements
 
@@ -31,10 +33,11 @@ A prefix-based Discord bot that edits video attachments with FFmpeg using ordere
 
 - The bot runs as a persistent console workflow and uses Discord's gateway through `discord.js`.
 - FFmpeg is invoked with an argument array, not a shell command, and downloaded videos are size/duration limited.
+- `pitch=a;b;c` shifts three copies of the current audio with the Rubber Band CLI, then mixes the copies before muxing the final video.
 
 ## Product
 
-- `534!edit` applies one or more ordered color, speed, hue, and mirror effects to an attached video.
+- `534!edit` applies ordered color, speed, hue, pitch-mix, and mirror effects to an attached video.
 
 ## User preferences
 
