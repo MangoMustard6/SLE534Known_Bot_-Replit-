@@ -85,7 +85,7 @@ export async function processAudioEffects(
         );
         await runProcess(
           "rubberband",
-          ["--pitch", String(pitch), currentAudio, layerPath],
+          ["--fine", "--pitch", String(pitch), currentAudio, layerPath],
           240_000,
         );
         pitchLayers.push(layerPath);

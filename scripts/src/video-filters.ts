@@ -2,7 +2,6 @@ export type VideoEffect =
   | { name: "grayscale" }
   | { name: "sepia" }
   | { name: "speed"; value: number }
-  | { name: "hue"; mode: "rotate"; value: number }
   | {
       name: "hue";
       mode: "modulate";
@@ -17,28 +16,23 @@ export type VideoEffect =
   | { name: "mirrorhr" };
 
 const DEFAULT_SPEED = 1.5;
-const DEFAULT_HUE = 90;
 const MAX_EFFECTS = 8;
 
 function parseModulateHue(
-  rawValue: string,
+  rawValue?: string,
 ): Extract<VideoEffect, { name: "hue"; mode: "modulate" }> {
-  const values = rawValue.split(";").map((value) => value.trim());
-  if (values.length < 2 || values.length > 5) {
+  const values = rawValue?.split(";").map((value) => value.trim()) ?? [];
+  if (values.length > 5) {
     throw new Error(
-      "Use hue=<degrees> or hue=<normalizedHue>;<saturation>;<lightness>;<colorspace>[;<betterfully>].",
+      "Use hue=<normalizedHue>[;<saturation>;<lightness>;<colorspace>[;<betterfully>]].",
     );
   }
 
   const [rawHue, rawSaturation, rawLightness, rawColorspace, rawBetterfully] =
     values;
-  if (!rawHue) {
-    throw new Error("The modulated hue value must be between -0.5 and 0.5.");
-  }
-
-  const hue = Number(rawHue);
+  const hue = rawHue ? Number(rawHue) : 0;
   if (!Number.isFinite(hue) || hue < -0.5 || hue > 0.5) {
-    throw new Error("The modulated hue value must be between -0.5 and 0.5.");
+    throw new Error("Hue must be a normalized offset between -0.5 and 0.5.");
   }
 
   const parseMultiplier = (raw: string | undefined, name: string) => {
@@ -152,18 +146,7 @@ export function parseEffectChain(input: string): VideoEffect[] {
     }
 
     if (name === "hue") {
-      if (rawValue === "") {
-        throw new Error("Hue needs a value between -360 and 360 degrees.");
-      }
-      if (rawValue?.includes(";")) {
-        return parseModulateHue(rawValue);
-      }
-      const value =
-        rawValue === undefined ? DEFAULT_HUE : Number(rawValue.trim());
-      if (!Number.isFinite(value) || value < -360 || value > 360) {
-        throw new Error("Hue must be between -360 and 360 degrees.");
-      }
-      return { name, mode: "rotate", value };
+      return parseModulateHue(rawValue);
     }
 
     throw new Error(
@@ -201,7 +184,7 @@ export function buildFfmpegArguments(
   hueClutPaths: string[] = [],
 ): string[] {
   const expectedHueCluts = effects.filter(
-    (effect) => effect.name === "hue" && effect.mode === "modulate",
+    (effect) => effect.name === "hue",
   ).length;
   if (hueClutPaths.length !== expectedHueCluts) {
     throw new Error(
@@ -234,9 +217,7 @@ export function buildFfmpegArguments(
         addFilter(`setpts=PTS/${effect.value}`);
         break;
       case "hue":
-        if (effect.mode === "rotate") {
-          addFilter(`hue=h=${effect.value}`);
-        } else {
+        {
           const nextLabel = `v${labelIndex++}`;
           const clutInputIndex =
             1 + Number(Boolean(processedAudioPath)) + hueClutIndex++;
@@ -304,21 +285,17 @@ export function buildFfmpegArguments(
 
   args.push(
     "-c:v",
-    "libx264",
-    "-preset",
-    "veryfast",
-    "-crf",
-    "23",
+    "ffv1",
     "-pix_fmt",
     "yuv420p",
     "-c:a",
-    "aac",
-    "-b:a",
-    "128k",
+    "pcm_s16le",
     "-movflags",
     "+faststart",
     "-threads",
     "2",
+    "-f",
+    "mov",
     outputPath,
   );
 

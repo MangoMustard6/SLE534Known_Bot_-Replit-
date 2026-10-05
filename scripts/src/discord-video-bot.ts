@@ -37,9 +37,9 @@ function usageMessage(): string {
     "",
     "Effects: `grayscale`, `speed`, `sepia`, `hue`, `pitch`, `mirrorhl`, `mirrorhr`",
     "`speed` defaults to 1.5x; set it with `speed=2` (0.25–4).",
-    "`hue` defaults to 90 degrees; use `hue=-45` for a degree rotation (-360–360).",
-    "`hue=0.1;1.2;1;hsl;true` uses Hald CLUT modulation (hue -0.5–0.5, saturation/lightness 0–10x, hsl or hsv, optional betterfully rounding).",
-    "`pitch=+3;0;-3` mixes three pitch-shifted audio layers (semitones, -24 to +24).",
+    "`hue` uses Hald CLUT modulation; bare `hue` is neutral. Set it with `hue=0.1;1.2;1;hsl;true` (hue -0.5–0.5, saturation/lightness 0–10x, hsl or hsv, optional betterfully rounding).",
+    "`pitch=+3;0;-3` mixes three pitch-shifted audio layers using Rubber Band's R3 finer engine (semitones, -24 to +24).",
+    "Output: `.mov` with FFV1 video and PCM s16le audio.",
     "",
     "Example: `534!edit grayscale|pitch=+3;0;-3|speed=1.25`",
   ].join("\n");
@@ -151,14 +151,14 @@ async function editAttachment(
   const directory = await mkdtemp(join(tmpdir(), "534-video-edit-"));
   const extension = extname(attachment.name).toLowerCase() || ".video";
   const inputPath = join(directory, `input${extension}`);
-  const outputPath = join(directory, "edited.mp4");
+  const outputPath = join(directory, "edited.mov");
 
   try {
     await downloadAttachment(attachment.url, inputPath);
     const hasAudio = await validateVideo(inputPath);
     const hueClutPaths: string[] = [];
     for (const [index, effect] of effects.entries()) {
-      if (effect.name === "hue" && effect.mode === "modulate") {
+      if (effect.name === "hue") {
         hueClutPaths.push(await generateHueClut(effect, directory, index));
       }
     }
@@ -263,7 +263,7 @@ client.on("messageCreate", async (message) => {
     status = await message.reply("Editing your video…");
     const result = await editAttachment(attachment, effectInput);
     workDirectory = result.directory;
-    const file = new AttachmentBuilder(result.path, { name: "edited.mp4" });
+    const file = new AttachmentBuilder(result.path, { name: "edited.mov" });
     await status.edit({
       content: `Done. Applied: ${effects.map((effect) => effect.name).join(" → ")}`,
       files: [file],
