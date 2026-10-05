@@ -1,6 +1,6 @@
 # 534 Video Editing Bot
 
-The bot uses the `534!` prefix. Send a video attachment with:
+The bot uses the `534!` prefix. Attach a video to the command, or reply to a message containing a video. If both messages have a video, the command's own attachment is used.
 
 ```text
 534!edit grayscale|invert|speed|sepia|hue|mirrorhl|mirrorhr

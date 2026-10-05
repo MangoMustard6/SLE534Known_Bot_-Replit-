@@ -36,7 +36,7 @@ let activeJobs = 0;
 
 function usageMessage(): string {
   return [
-    "Attach a video and use `534!edit` followed by effects separated with `|`.",
+    "Attach a video to `534!edit`, or reply to a video message with `534!edit` and effects separated by `|`.",
     "",
     "Effects: `grayscale`, `invert`, `speed`, `sepia`, `hue`, `pitch`, `mirrorhl`, `mirrorhr`",
     "`speed` defaults to 1.5x; set it with `speed=2` (0.25–4).",
@@ -246,9 +246,24 @@ client.on("messageCreate", async (message) => {
     return;
   }
 
-  const attachment = message.attachments.find(isVideoAttachment);
+  let attachment = message.attachments.find(isVideoAttachment);
+  if (!attachment && message.reference?.messageId) {
+    try {
+      const referencedMessage = await message.channel.messages.fetch(
+        message.reference.messageId,
+      );
+      attachment = referencedMessage.attachments.find(isVideoAttachment);
+    } catch {
+      await message.reply(
+        "I couldn't access the message you're replying to. Make sure it still exists and try again.",
+      );
+      return;
+    }
+  }
   if (!attachment) {
-    await message.reply("Attach a video file to the `534!edit` message.");
+    await message.reply(
+      "Attach a video to the `534!edit` message or reply to a message with a video.",
+    );
     return;
   }
   if (attachment.size > MAX_VIDEO_BYTES) {
