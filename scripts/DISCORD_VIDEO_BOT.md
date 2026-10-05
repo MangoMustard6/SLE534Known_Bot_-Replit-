@@ -3,7 +3,7 @@
 The bot uses the `534!` prefix. Send a video attachment with:
 
 ```text
-534!edit grayscale|speed|sepia|hue|mirrorhl|mirrorhr
+534!edit grayscale|invert|speed|sepia|hue|mirrorhl|mirrorhr
 ```
 
 Effects are applied from left to right. Use `|` between effects.
@@ -11,6 +11,7 @@ Effects are applied from left to right. Use `|` between effects.
 | Effect | Behavior |
 | --- | --- |
 | `grayscale` | Removes color |
+| `invert` | Inverts the video colors |
 | `speed` | Speeds up to 1.5× by default; supports `speed=0.25` through `speed=4` |
 | `sepia` | Applies a sepia tone |
 | `hue` | Uses ImageMagick Hald CLUT modulation; supports `hue=<normalizedHue>[;<saturation>;<lightness>;<colorspace>[;<betterfully>]]`. |
@@ -22,6 +23,7 @@ Examples:
 
 ```text
 534!edit grayscale|sepia
+534!edit invert|hue=0.1;1.2;1.0;hsl;true
 534!edit speed=2|hue=0.1;1.2;1.0;hsl;true|mirrorhl
 534!edit hue
 534!edit hue=0.1;1.2;1.0;hsl;true|sepia
@@ -33,7 +35,7 @@ Examples:
 
 The three `pitch` values create three separate copies of the current audio, shift each by its semitone amount with Rubber Band's R3 finer engine (`--fine`, corresponding to `OptionEngineFiner`), then mix the copies together. Pitch shifting preserves duration.
 
-The output is a `.mov` file with FFV1 video and PCM s16le audio. Lossless output can be larger than the source; the existing 25 MB Discord output limit still applies.
+The output is an `.mp4` file with H.264 video and AAC audio for playback compatibility. The existing 25 MB Discord output limit applies.
 
 ## Requirements
 

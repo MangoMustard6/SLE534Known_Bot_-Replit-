@@ -36,11 +36,11 @@ A prefix-based Discord bot that edits video attachments with FFmpeg using ordere
 - FFmpeg is invoked with an argument array, not a shell command, and downloaded videos are size/duration limited.
 - `pitch=a;b;c` shifts three copies of the current audio with Rubber Band's R3 finer engine (`--fine` / `OptionEngineFiner`), then mixes the copies before muxing the final video.
 - Every `hue` effect uses ImageMagick Hald CLUT modulation in the ordered FFmpeg filter graph; there is no legacy degree-rotation path.
-- Final output is MOV with FFV1 video and PCM s16le audio; Discord's existing 25 MB output limit still applies.
+- Final output is MP4 with H.264 video and AAC audio for broad playback compatibility; Discord's existing 25 MB output limit still applies.
 
 ## Product
 
-- `534!edit` applies ordered color, speed, hue, pitch-mix, and mirror effects to an attached video.
+- `534!edit` applies ordered color, invert, speed, hue, pitch-mix, and mirror effects to an attached video.
 
 ## User preferences
 

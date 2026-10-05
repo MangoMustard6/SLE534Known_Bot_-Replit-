@@ -1,5 +1,6 @@
 export type VideoEffect =
   | { name: "grayscale" }
+  | { name: "invert" }
   | { name: "sepia" }
   | { name: "speed"; value: number }
   | {
@@ -93,6 +94,7 @@ export function parseEffectChain(input: string): VideoEffect[] {
     const [, name, separator, rawValue] = match;
     if (
       name === "grayscale" ||
+      name === "invert" ||
       name === "sepia" ||
       name === "mirrorhl" ||
       name === "mirrorhr"
@@ -103,6 +105,8 @@ export function parseEffectChain(input: string): VideoEffect[] {
       switch (name) {
         case "grayscale":
           return { name: "grayscale" };
+        case "invert":
+          return { name: "invert" };
         case "sepia":
           return { name: "sepia" };
         case "mirrorhl":
@@ -150,7 +154,7 @@ export function parseEffectChain(input: string): VideoEffect[] {
     }
 
     throw new Error(
-      `Unknown effect "${name}". Use grayscale, speed, sepia, hue, pitch, mirrorhl, or mirrorhr.`,
+      `Unknown effect "${name}". Use grayscale, invert, speed, sepia, hue, pitch, mirrorhl, or mirrorhr.`,
     );
   });
 }
@@ -207,6 +211,9 @@ export function buildFfmpegArguments(
     switch (effect.name) {
       case "grayscale":
         addFilter("hue=s=0");
+        break;
+      case "invert":
+        addFilter("negate");
         break;
       case "sepia":
         addFilter(
@@ -285,17 +292,21 @@ export function buildFfmpegArguments(
 
   args.push(
     "-c:v",
-    "ffv1",
+    "libx264",
+    "-preset",
+    "veryfast",
+    "-crf",
+    "23",
     "-pix_fmt",
     "yuv420p",
     "-c:a",
-    "pcm_s16le",
+    "aac",
+    "-b:a",
+    "128k",
     "-movflags",
     "+faststart",
     "-threads",
     "2",
-    "-f",
-    "mov",
     outputPath,
   );
 
