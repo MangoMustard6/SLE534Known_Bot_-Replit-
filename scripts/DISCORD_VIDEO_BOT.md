@@ -33,7 +33,7 @@ Examples:
 
 `hue` uses a normalized hue offset from -0.5 to 0.5, saturation and lightness multipliers from 0 to 10, and either `hsl` or `hsv`. The optional final `betterfully` value accepts true/false (or common equivalents) and enables stepped hue rounding. Omitted values default to zero hue offset, 1× saturation, 1× lightness, `hsl`, and false. Single-value degree rotations such as `hue=45` are no longer supported.
 
-The `pitch` values create one separate copy of the current audio per value, shift each by its semitone amount with Rubber Band's R3 finer engine (`--fine`, corresponding to `OptionEngineFiner`), then mix all copies together. Provide between 1 and 100 values separated by semicolons. Pitch shifting preserves duration.
+The `pitch` values create one separate copy of the current audio per value, shift each by its semitone amount with Rubber Band's R3 finer engine (`--fine`, corresponding to `OptionEngineFiner`), then mix all copies together. Provide between 1 and 100 values separated by semicolons. Pitch shifting preserves duration. R3 layers are processed in a bounded parallel pool, and the bot reports progress during larger mixes; 100 shifts on a long video can still take several minutes.
 
 The output is an `.mp4` file with H.264 video and AAC audio for playback compatibility. The existing 25 MB Discord output limit applies.
 

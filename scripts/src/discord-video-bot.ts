@@ -8,7 +8,10 @@ import {
 import { open, mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { extname, join } from "node:path";
-import { processAudioEffects } from "./audio-processing.js";
+import {
+  processAudioEffects,
+  type PitchProgressCallback,
+} from "./audio-processing.js";
 import { generateHueClut } from "./hue-clut.js";
 import { runProcess } from "./process-runner.js";
 import { buildFfmpegArguments, parseEffectChain } from "./video-filters.js";
@@ -146,6 +149,7 @@ async function editAttachment(
     name: string;
   },
   effectInput: string,
+  onPitchProgress?: PitchProgressCallback,
 ): Promise<{ path: string; directory: string }> {
   const effects = parseEffectChain(effectInput);
   const directory = await mkdtemp(join(tmpdir(), "534-video-edit-"));
@@ -167,6 +171,7 @@ async function editAttachment(
       directory,
       effects,
       hasAudio,
+      onPitchProgress,
     );
     await runProcess(
       "ffmpeg",
@@ -261,7 +266,18 @@ client.on("messageCreate", async (message) => {
 
   try {
     status = await message.reply("Editing your video…");
-    const result = await editAttachment(attachment, effectInput);
+    const result = await editAttachment(
+      attachment,
+      effectInput,
+      async (completed, total) => {
+        if (!status) return;
+        const progressText =
+          completed === total
+            ? `Pitch layers complete (${completed}/${total}). Rendering final video…`
+            : `Pitch processing: ${completed}/${total} layers complete…`;
+        await status.edit(progressText).catch(() => undefined);
+      },
+    );
     workDirectory = result.directory;
     const file = new AttachmentBuilder(result.path, { name: "edited.mp4" });
     await status.edit({

@@ -1,15 +1,56 @@
 import { join } from "node:path";
+import { availableParallelism } from "node:os";
 import {
   buildAudioTempoFilter,
   type VideoEffect,
 } from "./video-filters.js";
 import { runProcess } from "./process-runner.js";
 
+export type PitchProgressCallback = (
+  completed: number,
+  total: number,
+) => Promise<void> | void;
+
+const MAX_PARALLEL_PITCH_SHIFTS = Math.max(
+  1,
+  Math.min(3, availableParallelism() - 1),
+);
+let activePitchShifts = 0;
+const pitchShiftWaiters: Array<() => void> = [];
+
+async function acquirePitchShiftSlot(): Promise<void> {
+  if (activePitchShifts < MAX_PARALLEL_PITCH_SHIFTS) {
+    activePitchShifts += 1;
+    return;
+  }
+
+  await new Promise<void>((resolve) => pitchShiftWaiters.push(resolve));
+}
+
+function releasePitchShiftSlot(): void {
+  const nextWaiter = pitchShiftWaiters.shift();
+  if (nextWaiter) {
+    nextWaiter();
+  } else {
+    activePitchShifts -= 1;
+  }
+}
+
+async function withPitchShiftSlot<T>(work: () => Promise<T>): Promise<T> {
+  await acquirePitchShiftSlot();
+  try {
+    return await work();
+  } finally {
+    releasePitchShiftSlot();
+  }
+}
+
 export async function processAudioEffects(
   inputPath: string,
   directory: string,
   effects: VideoEffect[],
   hasAudio: boolean,
+  onPitchProgress?: PitchProgressCallback,
 ): Promise<string | undefined> {
   const audioEffects = effects.filter(
     (effect) => effect.name === "speed" || effect.name === "pitch",
@@ -81,18 +122,68 @@ export async function processAudioEffects(
         throw new Error("Pitch accepts between 1 and 100 semitone values.");
       }
 
-      const pitchLayers: string[] = [];
-      for (const [layerIndex, pitch] of effect.pitches.entries()) {
-        const layerPath = join(
-          directory,
-          `audio-pitch-${effectIndex}-${layerIndex}.wav`,
-        );
-        await runProcess(
-          "rubberband",
-          ["--fine", "--pitch", String(pitch), currentAudio, layerPath],
-          240_000,
-        );
-        pitchLayers.push(layerPath);
+      const pitchLayers = effect.pitches.map((_, layerIndex) =>
+        join(directory, `audio-pitch-${effectIndex}-${layerIndex}.wav`),
+      );
+      const progressInterval = Math.max(1, Math.ceil(pitchLayers.length / 10));
+      let completedLayers = 0;
+      let progressQueue = Promise.resolve();
+      let firstPitchFailure: unknown;
+
+      const reportProgress = (completed: number) => {
+        if (!onPitchProgress) return;
+        progressQueue = progressQueue
+          .then(() => onPitchProgress(completed, pitchLayers.length))
+          .then(() => undefined)
+          .catch((error: unknown) => {
+            console.warn(
+              "Couldn't update pitch progress:",
+              error instanceof Error ? error.message : "Unknown error",
+            );
+          });
+      };
+
+      reportProgress(0);
+      const layerResults = await Promise.allSettled(
+        effect.pitches.map(async (pitch, layerIndex) => {
+          try {
+            await withPitchShiftSlot(async () => {
+              if (firstPitchFailure !== undefined) return;
+              await runProcess(
+                "rubberband",
+                [
+                  "--fine",
+                  "--pitch",
+                  String(pitch),
+                  currentAudio,
+                  pitchLayers[layerIndex],
+                ],
+                240_000,
+              );
+            });
+            if (firstPitchFailure !== undefined) return;
+
+            completedLayers += 1;
+            if (
+              completedLayers === pitchLayers.length ||
+              completedLayers % progressInterval === 0
+            ) {
+              reportProgress(completedLayers);
+              await progressQueue;
+            }
+          } catch (error) {
+            firstPitchFailure ??= error;
+            throw error;
+          }
+        }),
+      );
+      await progressQueue;
+
+      const failedLayer = layerResults.find(
+        (result) => result.status === "rejected",
+      );
+      if (failedLayer?.status === "rejected") {
+        throw failedLayer.reason;
       }
 
       const mixedAudio = join(directory, `audio-pitch-mix-${effectIndex}.wav`);
