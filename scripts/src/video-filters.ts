@@ -186,6 +186,7 @@ export function buildFfmpegArguments(
   effects: VideoEffect[],
   processedAudioPath?: string,
   hueClutPaths: string[] = [],
+  durationSeconds?: number,
 ): string[] {
   const expectedHueCluts = effects.filter(
     (effect) => effect.name === "hue",
@@ -303,12 +304,18 @@ export function buildFfmpegArguments(
     "aac",
     "-b:a",
     "128k",
-    "-movflags",
-    "+faststart",
     "-threads",
     "2",
-    outputPath,
   );
+  if (durationSeconds !== undefined) {
+    args.push("-t", String(durationSeconds));
+  }
+  if (outputPath.toLowerCase().endsWith(".ts")) {
+    args.push("-f", "mpegts");
+  } else {
+    args.push("-movflags", "+faststart");
+  }
+  args.push(outputPath);
 
   return args;
 }

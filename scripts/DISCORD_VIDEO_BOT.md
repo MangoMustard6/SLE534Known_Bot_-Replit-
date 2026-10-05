@@ -4,6 +4,7 @@ The bot uses the `534!` prefix. Attach a video to the command, or reply to a mes
 
 ```text
 534!edit grayscale|invert|speed|sepia|hue|mirrorhl|mirrorhr
+534!ihtx 2 4 invert|sepia
 ```
 
 Effects are applied from left to right. Use `|` between effects.
@@ -33,7 +34,9 @@ Examples:
 
 `hue` uses a normalized hue offset from -0.5 to 0.5, saturation and lightness multipliers from 0 to 10, and either `hsl` or `hsv`. The optional final `betterfully` value accepts true/false (or common equivalents) and enables stepped hue rounding. Omitted values default to zero hue offset, 1× saturation, 1× lightness, `hsl`, and false. Single-value degree rotations such as `hue=45` are no longer supported.
 
-The `pitch` values create one separate copy of the current audio per value, shift each by its semitone amount with Rubber Band's R3 finer engine (`--fine`, corresponding to `OptionEngineFiner`), then mix all copies together. Provide between 1 and 100 values separated by semicolons. Pitch shifting preserves duration. R3 layers are processed in a bounded parallel pool, and the bot reports progress during larger mixes; 100 shifts on a long video can still take several minutes.
+The `pitch` values create one separate copy of the current audio per value, shift each by its semitone amount with Rubber Band's R3 finer engine (`--fine`, corresponding to `OptionEngineFiner`), then mix all copies together without normalization. Provide between 1 and 100 values separated by semicolons. Pitch shifting preserves duration; an unnormalized mix can clip. R3 layers are processed in a bounded parallel pool, and the bot reports progress during larger mixes.
+
+`534!ihtx <seconds> <powers> <effects>` creates progressive segments and joins them: the first segment applies the effect chain once, the second applies it twice, and so on up to `powers`. Segment time must be at least 0.1 seconds; powers must be 1–10; total output duration is limited to 180 seconds. When pitch effects are included, the complete IHTX edit is limited to 100 pitch layers.
 
 The output is an `.mp4` file with H.264 video and AAC audio for playback compatibility. The existing 25 MB Discord output limit applies.
 

@@ -190,7 +190,7 @@ export async function processAudioEffects(
       const mixInputs = pitchLayers
         .map((_, layerIndex) => `[${layerIndex}:a:0]`)
         .join("");
-      const mixGraph = `${mixInputs}amix=inputs=${pitchLayers.length}:duration=longest:dropout_transition=0:normalize=1[mix]`;
+      const mixGraph = `${mixInputs}amix=inputs=${pitchLayers.length}:duration=longest:dropout_transition=0:normalize=0[mix]`;
       const mixTimeoutMs = Math.min(
         600_000,
         120_000 + Math.max(0, pitchLayers.length - 3) * 5_000,
