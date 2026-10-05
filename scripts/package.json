@@ -4,11 +4,15 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "bot:dev": "tsx ./src/discord-video-bot.ts",
     "hello": "tsx ./src/hello.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "devDependencies": {
     "@types/node": "catalog:",
     "tsx": "catalog:"
+  },
+  "dependencies": {
+    "discord.js": "^14.27.0"
   }
 }

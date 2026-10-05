@@ -1,0 +1,1 @@
+- [Workspace package installation](workspace-package-installation.md) — when package installation targets the workspace root, install with a package filter instead.
