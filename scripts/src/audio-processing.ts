@@ -77,6 +77,10 @@ export async function processAudioEffects(
     }
 
     if (effect.name === "pitch") {
+      if (effect.pitches.length < 1 || effect.pitches.length > 100) {
+        throw new Error("Pitch accepts between 1 and 100 semitone values.");
+      }
+
       const pitchLayers: string[] = [];
       for (const [layerIndex, pitch] of effect.pitches.entries()) {
         const layerPath = join(
@@ -92,8 +96,14 @@ export async function processAudioEffects(
       }
 
       const mixedAudio = join(directory, `audio-pitch-mix-${effectIndex}.wav`);
-      const mixGraph =
-        "[0:a:0][1:a:0][2:a:0]amix=inputs=3:duration=longest:dropout_transition=0:normalize=1[mix]";
+      const mixInputs = pitchLayers
+        .map((_, layerIndex) => `[${layerIndex}:a:0]`)
+        .join("");
+      const mixGraph = `${mixInputs}amix=inputs=${pitchLayers.length}:duration=longest:dropout_transition=0:normalize=1[mix]`;
+      const mixTimeoutMs = Math.min(
+        600_000,
+        120_000 + Math.max(0, pitchLayers.length - 3) * 5_000,
+      );
       await runProcess(
         "ffmpeg",
         [
@@ -114,7 +124,7 @@ export async function processAudioEffects(
           "pcm_s16le",
           mixedAudio,
         ],
-        120_000,
+        mixTimeoutMs,
       );
       currentAudio = mixedAudio;
     }

@@ -12,7 +12,7 @@ export type VideoEffect =
       colorspace: "hsl" | "hsv";
       betterfully: boolean;
     }
-  | { name: "pitch"; pitches: [number, number, number] }
+  | { name: "pitch"; pitches: number[] }
   | { name: "mirrorhl" }
   | { name: "mirrorhr" };
 
@@ -118,11 +118,11 @@ export function parseEffectChain(input: string): VideoEffect[] {
 
     if (name === "pitch") {
       if (separator !== "=" || rawValue === undefined) {
-        throw new Error("Use pitch=<first>;<second>;<third> for pitch layers.");
+        throw new Error("Use pitch=<semitone>[;<semitone>...], with 1 to 100 values.");
       }
-      const rawPitches = rawValue.split(";");
-      if (rawPitches.length !== 3) {
-        throw new Error("Pitch requires exactly three semitone values separated by semicolons.");
+      const rawPitches = rawValue.split(";").map((value) => value.trim());
+      if (rawPitches.length < 1 || rawPitches.length > 100) {
+        throw new Error("Pitch accepts between 1 and 100 semitone values.");
       }
 
       const pitches = rawPitches.map((rawPitch) => {
@@ -134,7 +134,7 @@ export function parseEffectChain(input: string): VideoEffect[] {
           throw new Error("Each pitch shift must be between -24 and 24 semitones.");
         }
         return pitch;
-      }) as [number, number, number];
+      });
       return { name, pitches };
     }
 

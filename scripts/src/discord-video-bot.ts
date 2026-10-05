@@ -38,7 +38,7 @@ function usageMessage(): string {
     "Effects: `grayscale`, `invert`, `speed`, `sepia`, `hue`, `pitch`, `mirrorhl`, `mirrorhr`",
     "`speed` defaults to 1.5x; set it with `speed=2` (0.25–4).",
     "`hue` uses Hald CLUT modulation; bare `hue` is neutral. Set it with `hue=0.1;1.2;1;hsl;true` (hue -0.5–0.5, saturation/lightness 0–10x, hsl or hsv, optional betterfully rounding).",
-    "`pitch=+3;0;-3` mixes three pitch-shifted audio layers using Rubber Band's R3 finer engine (semitones, -24 to +24).",
+    "`pitch=+3;0;-3` mixes pitch-shifted audio layers using Rubber Band's R3 finer engine; use 1–100 semitone values (-24 to +24 each).",
     "Output: `.mp4` with H.264 video and AAC audio for broad playback compatibility.",
     "",
     "Example: `534!edit grayscale|pitch=+3;0;-3|speed=1.25`",

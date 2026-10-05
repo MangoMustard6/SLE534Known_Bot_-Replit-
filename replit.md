@@ -34,7 +34,7 @@ A prefix-based Discord bot that edits video attachments with FFmpeg using ordere
 
 - The bot runs as a persistent console workflow and uses Discord's gateway through `discord.js`.
 - FFmpeg is invoked with an argument array, not a shell command, and downloaded videos are size/duration limited.
-- `pitch=a;b;c` shifts three copies of the current audio with Rubber Band's R3 finer engine (`--fine` / `OptionEngineFiner`), then mixes the copies before muxing the final video.
+- `pitch=a;b;...` accepts 1–100 semitone shifts, processes one audio copy per value with Rubber Band's R3 finer engine (`--fine` / `OptionEngineFiner`), then mixes the copies before muxing the final video.
 - Every `hue` effect uses ImageMagick Hald CLUT modulation in the ordered FFmpeg filter graph; there is no legacy degree-rotation path.
 - Final output is MP4 with H.264 video and AAC audio for broad playback compatibility; Discord's existing 25 MB output limit still applies.
 

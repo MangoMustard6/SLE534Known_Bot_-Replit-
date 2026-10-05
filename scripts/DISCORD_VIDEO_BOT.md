@@ -15,7 +15,7 @@ Effects are applied from left to right. Use `|` between effects.
 | `speed` | Speeds up to 1.5× by default; supports `speed=0.25` through `speed=4` |
 | `sepia` | Applies a sepia tone |
 | `hue` | Uses ImageMagick Hald CLUT modulation; supports `hue=<normalizedHue>[;<saturation>;<lightness>;<colorspace>[;<betterfully>]]`. |
-| `pitch` | Mixes three Rubber Band R3 finer-engine pitch-shifted audio layers (`--fine` / `OptionEngineFiner`); values are semitones from -24 to +24 |
+| `pitch` | Mixes 1–100 Rubber Band R3 finer-engine pitch-shifted audio layers (`--fine` / `OptionEngineFiner`); each value is a semitone shift from -24 to +24 |
 | `mirrorhl` | Mirrors the left half across the center |
 | `mirrorhr` | Mirrors the right half across the center |
 
@@ -33,7 +33,7 @@ Examples:
 
 `hue` uses a normalized hue offset from -0.5 to 0.5, saturation and lightness multipliers from 0 to 10, and either `hsl` or `hsv`. The optional final `betterfully` value accepts true/false (or common equivalents) and enables stepped hue rounding. Omitted values default to zero hue offset, 1× saturation, 1× lightness, `hsl`, and false. Single-value degree rotations such as `hue=45` are no longer supported.
 
-The three `pitch` values create three separate copies of the current audio, shift each by its semitone amount with Rubber Band's R3 finer engine (`--fine`, corresponding to `OptionEngineFiner`), then mix the copies together. Pitch shifting preserves duration.
+The `pitch` values create one separate copy of the current audio per value, shift each by its semitone amount with Rubber Band's R3 finer engine (`--fine`, corresponding to `OptionEngineFiner`), then mix all copies together. Provide between 1 and 100 values separated by semicolons. Pitch shifting preserves duration.
 
 The output is an `.mp4` file with H.264 video and AAC audio for playback compatibility. The existing 25 MB Discord output limit applies.
 
