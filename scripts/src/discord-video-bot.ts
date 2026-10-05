@@ -9,6 +9,7 @@ import { open, mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { extname, join } from "node:path";
 import { processAudioEffects } from "./audio-processing.js";
+import { generateHueClut } from "./hue-clut.js";
 import { runProcess } from "./process-runner.js";
 import { buildFfmpegArguments, parseEffectChain } from "./video-filters.js";
 
@@ -36,7 +37,8 @@ function usageMessage(): string {
     "",
     "Effects: `grayscale`, `speed`, `sepia`, `hue`, `pitch`, `mirrorhl`, `mirrorhr`",
     "`speed` defaults to 1.5x; set it with `speed=2` (0.25–4).",
-    "`hue` defaults to 90 degrees; set it with `hue=-45` (-360–360).",
+    "`hue` defaults to 90 degrees; use `hue=-45` for a degree rotation (-360–360).",
+    "`hue=0.1;1.2;1;hsl;true` uses Hald CLUT modulation (hue -0.5–0.5, saturation/lightness 0–10x, hsl or hsv, optional betterfully rounding).",
     "`pitch=+3;0;-3` mixes three pitch-shifted audio layers (semitones, -24 to +24).",
     "",
     "Example: `534!edit grayscale|pitch=+3;0;-3|speed=1.25`",
@@ -154,6 +156,12 @@ async function editAttachment(
   try {
     await downloadAttachment(attachment.url, inputPath);
     const hasAudio = await validateVideo(inputPath);
+    const hueClutPaths: string[] = [];
+    for (const [index, effect] of effects.entries()) {
+      if (effect.name === "hue" && effect.mode === "modulate") {
+        hueClutPaths.push(await generateHueClut(effect, directory, index));
+      }
+    }
     const processedAudioPath = await processAudioEffects(
       inputPath,
       directory,
@@ -162,7 +170,13 @@ async function editAttachment(
     );
     await runProcess(
       "ffmpeg",
-      buildFfmpegArguments(inputPath, outputPath, effects, processedAudioPath),
+      buildFfmpegArguments(
+        inputPath,
+        outputPath,
+        effects,
+        processedAudioPath,
+        hueClutPaths,
+      ),
       240_000,
     );
 

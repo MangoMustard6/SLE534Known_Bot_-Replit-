@@ -2,7 +2,16 @@ export type VideoEffect =
   | { name: "grayscale" }
   | { name: "sepia" }
   | { name: "speed"; value: number }
-  | { name: "hue"; value: number }
+  | { name: "hue"; mode: "rotate"; value: number }
+  | {
+      name: "hue";
+      mode: "modulate";
+      hue: number;
+      saturation: number;
+      lightness: number;
+      colorspace: "hsl" | "hsv";
+      betterfully: boolean;
+    }
   | { name: "pitch"; pitches: [number, number, number] }
   | { name: "mirrorhl" }
   | { name: "mirrorhr" };
@@ -10,6 +19,66 @@ export type VideoEffect =
 const DEFAULT_SPEED = 1.5;
 const DEFAULT_HUE = 90;
 const MAX_EFFECTS = 8;
+
+function parseModulateHue(
+  rawValue: string,
+): Extract<VideoEffect, { name: "hue"; mode: "modulate" }> {
+  const values = rawValue.split(";").map((value) => value.trim());
+  if (values.length < 2 || values.length > 5) {
+    throw new Error(
+      "Use hue=<degrees> or hue=<normalizedHue>;<saturation>;<lightness>;<colorspace>[;<betterfully>].",
+    );
+  }
+
+  const [rawHue, rawSaturation, rawLightness, rawColorspace, rawBetterfully] =
+    values;
+  if (!rawHue) {
+    throw new Error("The modulated hue value must be between -0.5 and 0.5.");
+  }
+
+  const hue = Number(rawHue);
+  if (!Number.isFinite(hue) || hue < -0.5 || hue > 0.5) {
+    throw new Error("The modulated hue value must be between -0.5 and 0.5.");
+  }
+
+  const parseMultiplier = (raw: string | undefined, name: string) => {
+    const value = raw ? Number(raw) : 1;
+    if (!Number.isFinite(value) || value < 0 || value > 10) {
+      throw new Error(`${name} must be a multiplier between 0 and 10.`);
+    }
+    return value;
+  };
+
+  const saturation = parseMultiplier(rawSaturation, "Saturation");
+  const lightness = parseMultiplier(rawLightness, "Lightness");
+  const colorspace = rawColorspace || "hsl";
+  if (colorspace !== "hsl" && colorspace !== "hsv") {
+    throw new Error("Hue colorspace must be hsl or hsv.");
+  }
+
+  const trueValues = new Set(["1", "true", "t", "y", "yes", "+", "on"]);
+  const falseValues = new Set(["0", "false", "f", "n", "no", "-", "off"]);
+  const betterfullyValue = rawBetterfully?.toLowerCase();
+  if (
+    betterfullyValue &&
+    !trueValues.has(betterfullyValue) &&
+    !falseValues.has(betterfullyValue)
+  ) {
+    throw new Error("betterfully must be a true or false value.");
+  }
+
+  return {
+    name: "hue",
+    mode: "modulate",
+    hue,
+    saturation,
+    lightness,
+    colorspace,
+    betterfully: betterfullyValue
+      ? trueValues.has(betterfullyValue)
+      : false,
+  };
+}
 
 export function parseEffectChain(input: string): VideoEffect[] {
   const parts = input.split("|").map((part) => part.trim().toLowerCase());
@@ -28,11 +97,25 @@ export function parseEffectChain(input: string): VideoEffect[] {
     }
 
     const [, name, separator, rawValue] = match;
-    if (name === "grayscale" || name === "sepia" || name === "mirrorhl" || name === "mirrorhr") {
+    if (
+      name === "grayscale" ||
+      name === "sepia" ||
+      name === "mirrorhl" ||
+      name === "mirrorhr"
+    ) {
       if (rawValue !== undefined) {
         throw new Error(`The ${name} effect does not take a value.`);
       }
-      return { name };
+      switch (name) {
+        case "grayscale":
+          return { name: "grayscale" };
+        case "sepia":
+          return { name: "sepia" };
+        case "mirrorhl":
+          return { name: "mirrorhl" };
+        case "mirrorhr":
+          return { name: "mirrorhr" };
+      }
     }
 
     if (name === "pitch") {
@@ -72,15 +155,19 @@ export function parseEffectChain(input: string): VideoEffect[] {
       if (rawValue === "") {
         throw new Error("Hue needs a value between -360 and 360 degrees.");
       }
-      const value = rawValue === undefined ? DEFAULT_HUE : Number(rawValue);
+      if (rawValue?.includes(";")) {
+        return parseModulateHue(rawValue);
+      }
+      const value =
+        rawValue === undefined ? DEFAULT_HUE : Number(rawValue.trim());
       if (!Number.isFinite(value) || value < -360 || value > 360) {
         throw new Error("Hue must be between -360 and 360 degrees.");
       }
-      return { name, value };
+      return { name, mode: "rotate", value };
     }
 
     throw new Error(
-      `Unknown effect "${name}". Use grayscale, speed, sepia, hue, mirrorhl, or mirrorhr.`,
+      `Unknown effect "${name}". Use grayscale, speed, sepia, hue, pitch, mirrorhl, or mirrorhr.`,
     );
   });
 }
@@ -111,10 +198,21 @@ export function buildFfmpegArguments(
   outputPath: string,
   effects: VideoEffect[],
   processedAudioPath?: string,
+  hueClutPaths: string[] = [],
 ): string[] {
+  const expectedHueCluts = effects.filter(
+    (effect) => effect.name === "hue" && effect.mode === "modulate",
+  ).length;
+  if (hueClutPaths.length !== expectedHueCluts) {
+    throw new Error(
+      `Expected ${expectedHueCluts} generated hue CLUT file(s), received ${hueClutPaths.length}.`,
+    );
+  }
+
   const graph: string[] = [];
   let currentLabel = "0:v";
   let labelIndex = 0;
+  let hueClutIndex = 0;
 
   const addFilter = (filter: string) => {
     const nextLabel = `v${labelIndex++}`;
@@ -136,7 +234,17 @@ export function buildFfmpegArguments(
         addFilter(`setpts=PTS/${effect.value}`);
         break;
       case "hue":
-        addFilter(`hue=h=${effect.value}`);
+        if (effect.mode === "rotate") {
+          addFilter(`hue=h=${effect.value}`);
+        } else {
+          const nextLabel = `v${labelIndex++}`;
+          const clutInputIndex =
+            1 + Number(Boolean(processedAudioPath)) + hueClutIndex++;
+          graph.push(
+            `[${currentLabel}][${clutInputIndex}:v]haldclut=interp=tetrahedral[${nextLabel}]`,
+          );
+          currentLabel = nextLabel;
+        }
         break;
       case "pitch":
         break;
@@ -181,6 +289,7 @@ export function buildFfmpegArguments(
   if (processedAudioPath) {
     args.push("-i", processedAudioPath);
   }
+  args.push(...hueClutPaths.flatMap((path) => ["-i", path]));
 
   args.push(
     "-filter_complex_threads",

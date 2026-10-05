@@ -25,6 +25,7 @@ A prefix-based Discord bot that edits video attachments with FFmpeg using ordere
 
 - `scripts/src/discord-video-bot.ts` — Discord command handling and FFmpeg job lifecycle
 - `scripts/src/audio-processing.ts` — speed and Rubber Band pitch processing for audio
+- `scripts/src/hue-clut.ts` — generates ImageMagick Hald CLUTs for advanced hue modulation
 - `scripts/src/process-runner.ts` — bounded external process execution
 - `scripts/src/video-filters.ts` — effect parsing and FFmpeg filter graph generation
 - `scripts/DISCORD_VIDEO_BOT.md` — command reference and setup requirements
@@ -34,6 +35,7 @@ A prefix-based Discord bot that edits video attachments with FFmpeg using ordere
 - The bot runs as a persistent console workflow and uses Discord's gateway through `discord.js`.
 - FFmpeg is invoked with an argument array, not a shell command, and downloaded videos are size/duration limited.
 - `pitch=a;b;c` shifts three copies of the current audio with the Rubber Band CLI, then mixes the copies before muxing the final video.
+- Advanced multi-value `hue` effects generate isolated ImageMagick Hald CLUT files and apply them in the ordered FFmpeg filter graph; single-value hue rotations retain the FFmpeg hue filter.
 
 ## Product
 
