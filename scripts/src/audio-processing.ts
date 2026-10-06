@@ -4,12 +4,17 @@ import {
   buildAudioTempoFilter,
   type VideoEffect,
 } from "./video-filters.js";
-import { runProcess } from "./process-runner.js";
+import { runProcess, timeoutWithinDeadline } from "./process-runner.js";
 
 export type PitchProgressCallback = (
   completed: number,
   total: number,
 ) => Promise<void> | void;
+
+export interface AudioProcessingOptions {
+  timeoutDeadline?: number;
+  inputDurationSeconds?: number;
+}
 
 const MAX_PARALLEL_PITCH_SHIFTS = Math.max(
   1,
@@ -51,7 +56,15 @@ export async function processAudioEffects(
   effects: VideoEffect[],
   hasAudio: boolean,
   onPitchProgress?: PitchProgressCallback,
+  options: AudioProcessingOptions = {},
 ): Promise<string | undefined> {
+  const processTimeout = (defaultTimeoutMs: number) =>
+    timeoutWithinDeadline(
+      options.timeoutDeadline === undefined
+        ? defaultTimeoutMs
+        : 600_000,
+      options.timeoutDeadline,
+    );
   const audioEffects = effects.filter(
     (effect) => effect.name === "speed" || effect.name === "pitch",
   );
@@ -83,9 +96,12 @@ export async function processAudioEffects(
       "48000",
       "-c:a",
       "pcm_s16le",
+      ...(options.inputDurationSeconds === undefined
+        ? []
+        : ["-t", String(options.inputDurationSeconds)]),
       originalAudio,
     ],
-    60_000,
+    processTimeout(60_000),
   );
 
   let currentAudio = originalAudio;
@@ -111,7 +127,7 @@ export async function processAudioEffects(
           "pcm_s16le",
           nextAudio,
         ],
-        240_000,
+        processTimeout(240_000),
       );
       currentAudio = nextAudio;
       continue;
@@ -158,7 +174,7 @@ export async function processAudioEffects(
                   currentAudio,
                   pitchLayers[layerIndex],
                 ],
-                240_000,
+                processTimeout(240_000),
               );
             });
             if (firstPitchFailure !== undefined) return;
@@ -215,7 +231,7 @@ export async function processAudioEffects(
           "pcm_s16le",
           mixedAudio,
         ],
-        mixTimeoutMs,
+        processTimeout(mixTimeoutMs),
       );
       currentAudio = mixedAudio;
     }

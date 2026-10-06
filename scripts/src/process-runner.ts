@@ -1,5 +1,20 @@
 import { spawn } from "node:child_process";
 
+export const IHTX_TIMEOUT_MS = 600_000;
+
+export function timeoutWithinDeadline(
+  defaultTimeoutMs: number,
+  deadlineAt?: number,
+): number {
+  if (deadlineAt === undefined) return defaultTimeoutMs;
+
+  const remainingMs = deadlineAt - Date.now();
+  if (remainingMs <= 0) {
+    throw new Error("IHTX exceeded its 600-second processing time limit.");
+  }
+  return Math.min(defaultTimeoutMs, Math.ceil(remainingMs));
+}
+
 export function runProcess(
   command: string,
   args: string[],

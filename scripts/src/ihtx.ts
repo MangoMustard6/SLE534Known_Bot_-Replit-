@@ -1,16 +1,17 @@
+import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { processAudioEffects } from "./audio-processing.js";
 import { generateHueClut } from "./hue-clut.js";
-import { runProcess } from "./process-runner.js";
+import {
+  IHTX_TIMEOUT_MS,
+  runProcess,
+  timeoutWithinDeadline,
+} from "./process-runner.js";
 import {
   buildFfmpegArguments,
   parseEffectChain,
   type VideoEffect,
 } from "./video-filters.js";
-
-export const MAX_IHTX_POWERS = 10;
-export const MAX_IHTX_OUTPUT_SECONDS = 180;
-const MAX_IHTX_PITCH_LAYERS = 100;
 
 export interface IhtxCommand {
   segmentSeconds: number;
@@ -42,28 +43,11 @@ export function parseIhtxCommand(input: string): IhtxCommand {
     throw new Error("IHTX powers must be a whole number.");
   }
   const powers = Number(rawPowers);
-  if (powers < 1 || powers > MAX_IHTX_POWERS) {
-    throw new Error(`IHTX powers must be between 1 and ${MAX_IHTX_POWERS}.`);
-  }
-  if (segmentSeconds * powers > MAX_IHTX_OUTPUT_SECONDS) {
-    throw new Error(
-      `IHTX output cannot exceed ${MAX_IHTX_OUTPUT_SECONDS} seconds.`,
-    );
+  if (!Number.isSafeInteger(powers) || powers < 1) {
+    throw new Error("IHTX powers must be a positive whole number.");
   }
 
   const effects = parseEffectChain(effectInput);
-  const pitchLayersPerPass = effects.reduce(
-    (total, effect) =>
-      total + (effect.name === "pitch" ? effect.pitches.length : 0),
-    0,
-  );
-  const totalPitchLayers =
-    pitchLayersPerPass * ((powers * (powers + 1)) / 2);
-  if (totalPitchLayers > MAX_IHTX_PITCH_LAYERS) {
-    throw new Error(
-      `IHTX can process at most ${MAX_IHTX_PITCH_LAYERS} total pitch layers across all powers.`,
-    );
-  }
 
   return { segmentSeconds, powers, effectInput, effects };
 }
@@ -77,20 +61,27 @@ export async function renderIhtx(
   onProgress?: IhtxProgressCallback,
 ): Promise<void> {
   const segmentPaths: string[] = [];
+  const deadlineAt = Date.now() + IHTX_TIMEOUT_MS;
+  let currentInputPath = inputPath;
 
   for (let power = 1; power <= command.powers; power += 1) {
-    const effects = Array.from({ length: power }, () => command.effects).flat();
-    await onProgress?.(`IHTX: rendering progressive segment ${power}/${command.powers}…`);
+    timeoutWithinDeadline(IHTX_TIMEOUT_MS, deadlineAt);
+    const effects = command.effects;
+    await onProgress?.(
+      `IHTX: rendering progressive export ${power}/${command.powers}…`,
+    );
 
     const hueClutPaths: string[] = [];
     for (const [index, effect] of effects.entries()) {
       if (effect.name === "hue") {
-        hueClutPaths.push(await generateHueClut(effect, directory, index));
+        hueClutPaths.push(
+          await generateHueClut(effect, directory, index, deadlineAt),
+        );
       }
     }
 
     const processedAudioPath = await processAudioEffects(
-      inputPath,
+      currentInputPath,
       directory,
       effects,
       hasAudio,
@@ -99,8 +90,13 @@ export async function renderIhtx(
           `IHTX ${power}/${command.powers}: pitch layers ${completed}/${total}…`,
         );
       },
+      {
+        timeoutDeadline: deadlineAt,
+        inputDurationSeconds: command.segmentSeconds,
+      },
     );
 
+    const renderedPath = join(directory, `ihtx-rendered-${power}.mp4`);
     const segmentPath = join(directory, `ihtx-segment-${power}.ts`);
     await onProgress?.(
       `IHTX: encoding segment ${power}/${command.powers}…`,
@@ -108,19 +104,68 @@ export async function renderIhtx(
     await runProcess(
       "ffmpeg",
       buildFfmpegArguments(
-        inputPath,
-        segmentPath,
+        currentInputPath,
+        renderedPath,
         effects,
         processedAudioPath,
         hueClutPaths,
         command.segmentSeconds,
       ),
-      240_000,
+      timeoutWithinDeadline(IHTX_TIMEOUT_MS, deadlineAt),
+    );
+
+    await onProgress?.(
+      `IHTX: normalizing export ${power}/${command.powers} duration…`,
+    );
+    await runProcess(
+      "ffmpeg",
+      [
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-stream_loop",
+        "-1",
+        "-i",
+        renderedPath,
+        "-t",
+        String(command.segmentSeconds),
+        "-map",
+        "0:v:0",
+        "-map",
+        "0:a?",
+        "-vf",
+        "setpts=PTS-STARTPTS",
+        ...(hasAudio ? ["-af", "asetpts=PTS-STARTPTS"] : []),
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "23",
+        "-pix_fmt",
+        "yuv420p",
+        ...(hasAudio ? ["-c:a", "aac", "-b:a", "128k"] : []),
+        "-threads",
+        "2",
+        "-f",
+        "mpegts",
+        segmentPath,
+      ],
+      timeoutWithinDeadline(IHTX_TIMEOUT_MS, deadlineAt),
     );
     segmentPaths.push(segmentPath);
+    currentInputPath = segmentPath;
   }
 
   await onProgress?.("IHTX: joining progressive segments…");
+  const concatListPath = join(directory, "ihtx-concat.txt");
+  await writeFile(
+    concatListPath,
+    segmentPaths
+      .map((path) => `file '${path.replaceAll("'", "'\\''")}'`)
+      .join("\n"),
+  );
   await runProcess(
     "ffmpeg",
     [
@@ -128,8 +173,12 @@ export async function renderIhtx(
       "-loglevel",
       "error",
       "-y",
+      "-f",
+      "concat",
+      "-safe",
+      "0",
       "-i",
-      `concat:${segmentPaths.join("|")}`,
+      concatListPath,
       "-map",
       "0:v:0",
       "-map",
@@ -140,6 +189,6 @@ export async function renderIhtx(
       "+faststart",
       outputPath,
     ],
-    120_000,
+    timeoutWithinDeadline(IHTX_TIMEOUT_MS, deadlineAt),
   );
 }

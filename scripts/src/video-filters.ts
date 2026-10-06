@@ -13,11 +13,19 @@ export type VideoEffect =
       betterfully: boolean;
     }
   | { name: "pitch"; pitches: number[] }
+  | {
+      name: "swirl";
+      strength: number;
+      xScale: number;
+      yScale: number;
+      xCenter: number;
+      yCenter: number;
+      linearFallout: boolean;
+    }
   | { name: "mirrorhl" }
   | { name: "mirrorhr" };
 
 const DEFAULT_SPEED = 1.5;
-const MAX_EFFECTS = 8;
 
 function parseModulateHue(
   rawValue?: string,
@@ -81,9 +89,6 @@ export function parseEffectChain(input: string): VideoEffect[] {
   if (parts.length === 0 || parts.some((part) => part.length === 0)) {
     throw new Error("Separate effects with | and do not leave an effect blank.");
   }
-  if (parts.length > MAX_EFFECTS) {
-    throw new Error(`Use no more than ${MAX_EFFECTS} effects in one edit.`);
-  }
 
   return parts.map((part) => {
     const match = /^([a-z]+)(?:([=:])(.*))?$/.exec(part);
@@ -138,6 +143,60 @@ export function parseEffectChain(input: string): VideoEffect[] {
       return { name, pitches };
     }
 
+    if (name === "swirl") {
+      if (separator !== "=" || rawValue === undefined) {
+        throw new Error(
+          "Use swirl=<strength>[;<x-scale>;<y-scale>;<x-center>;<y-center>[;<linear-fallout>]].",
+        );
+      }
+      const values = rawValue.split(";").map((value) => value.trim());
+      if (values.length > 6 || !values[0]) {
+        throw new Error(
+          "Use swirl=<strength>[;<x-scale>;<y-scale>;<x-center>;<y-center>[;<linear-fallout>]].",
+        );
+      }
+      const parseSwirlNumber = (
+        raw: string | undefined,
+        fallback: number,
+        label: string,
+      ) => {
+        if (raw === undefined || raw === "") return fallback;
+        const value = Number(raw);
+        if (!Number.isFinite(value)) {
+          throw new Error(`Swirl ${label} must be a finite number.`);
+        }
+        return value;
+      };
+      const strength = parseSwirlNumber(values[0], 0, "strength");
+      const xScale = parseSwirlNumber(values[1], 0.5, "x-scale");
+      const yScale = parseSwirlNumber(values[2], 0.5, "y-scale");
+      const xCenter = parseSwirlNumber(values[3], 0.5, "x-center");
+      const yCenter = parseSwirlNumber(values[4], 0.5, "y-center");
+      if (xScale <= 0 || yScale <= 0) {
+        throw new Error("Swirl x-scale and y-scale must be greater than zero.");
+      }
+
+      const trueValues = new Set(["1", "true", "t", "y", "yes", "+", "on"]);
+      const falseValues = new Set(["0", "false", "f", "n", "no", "-", "off"]);
+      const linearValue = values[5]?.toLowerCase();
+      if (
+        linearValue &&
+        !trueValues.has(linearValue) &&
+        !falseValues.has(linearValue)
+      ) {
+        throw new Error("Swirl linear-fallout must be a true or false value.");
+      }
+      return {
+        name,
+        strength,
+        xScale,
+        yScale,
+        xCenter,
+        yCenter,
+        linearFallout: linearValue ? trueValues.has(linearValue) : false,
+      };
+    }
+
     if (name === "speed") {
       if (rawValue === "") {
         throw new Error("Speed needs a value between 0.25 and 4.0.");
@@ -154,7 +213,7 @@ export function parseEffectChain(input: string): VideoEffect[] {
     }
 
     throw new Error(
-      `Unknown effect "${name}". Use grayscale, invert, speed, sepia, hue, pitch, mirrorhl, or mirrorhr.`,
+      `Unknown effect "${name}". Use grayscale, invert, speed, sepia, hue, pitch, swirl, mirrorhl, or mirrorhr.`,
     );
   });
 }
@@ -237,6 +296,25 @@ export function buildFfmpegArguments(
         break;
       case "pitch":
         break;
+      case "swirl": {
+        const dx = `(X-W*${effect.xCenter})/${effect.xScale}`;
+        const dy = `(Y-H*${effect.yCenter})/${effect.yScale}`;
+        const radius = `hypot(${dx},${dy})`;
+        const falloutPower = effect.linearFallout ? "" : "^2";
+        const attenuation =
+          `(if(lt(${radius},min(W,H)),` +
+          `1-${radius}/min(W,H),0)${falloutPower})`;
+        const angle =
+          `(atan2((Y-H*${effect.yCenter})*${effect.xScale},` +
+          `(X-W*${effect.xCenter})*${effect.yScale})+` +
+          `(${effect.strength})*(PI^2)*(-255/180)*${attenuation})`;
+        const x = `W*${effect.xCenter}+${radius}*cos(${angle})*${effect.xScale}`;
+        const y = `H*${effect.yCenter}+${radius}*sin(${angle})*${effect.yScale}`;
+        addFilter(
+          `format=yuv444p16le,scale=ih:ih,geq='p(${x},${y})',scale=dar*ih:ih,setsar=1:1,format=yuv420p`,
+        );
+        break;
+      }
       case "mirrorhl":
       case "mirrorhr": {
         const index = labelIndex++;
@@ -271,10 +349,9 @@ export function buildFfmpegArguments(
     "-loglevel",
     "error",
     "-y",
-    "-i",
-    inputPath,
   ];
 
+  args.push("-i", inputPath);
   if (processedAudioPath) {
     args.push("-i", processedAudioPath);
   }

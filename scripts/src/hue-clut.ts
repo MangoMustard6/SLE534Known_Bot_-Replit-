@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { runProcess } from "./process-runner.js";
+import { runProcess, timeoutWithinDeadline } from "./process-runner.js";
 import type { VideoEffect } from "./video-filters.js";
 
 type ModulatedHueEffect = Extract<
@@ -11,6 +11,7 @@ export async function generateHueClut(
   effect: ModulatedHueEffect,
   directory: string,
   effectIndex: number,
+  timeoutDeadline?: number,
 ): Promise<string> {
   const outputPath = join(directory, `hue-clut-${effectIndex}.ppm`);
   const modulatedHue = effect.hue * 200 + 100;
@@ -40,6 +41,13 @@ export async function generateHueClut(
   }
 
   args.push(outputPath);
-  await runProcess("magick", args, 60_000);
+  await runProcess(
+    "magick",
+    args,
+    timeoutWithinDeadline(
+      timeoutDeadline === undefined ? 60_000 : 600_000,
+      timeoutDeadline,
+    ),
+  );
   return outputPath;
 }

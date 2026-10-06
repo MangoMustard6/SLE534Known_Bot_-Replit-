@@ -44,11 +44,13 @@ function usageMessage(): string {
   return [
     "Attach a video to `534!edit`, or reply to a video message with `534!edit` and effects separated by `|`.",
     "",
-    "Effects: `grayscale`, `invert`, `speed`, `sepia`, `hue`, `pitch`, `mirrorhl`, `mirrorhr`",
+    "Effects: `grayscale`, `invert`, `speed`, `sepia`, `hue`, `pitch`, `swirl`, `mirrorhl`, `mirrorhr`",
     "`speed` defaults to 1.5x; set it with `speed=2` (0.25–4).",
     "`hue` uses Hald CLUT modulation; bare `hue` is neutral. Set it with `hue=0.1;1.2;1;hsl;true` (hue -0.5–0.5, saturation/lightness 0–10x, hsl or hsv, optional betterfully rounding).",
     "`pitch=+3;0;-3` mixes pitch-shifted audio layers using Rubber Band's R3 finer engine; use 1–100 semitone values (-24 to +24 each). Layers are mixed without normalization and may clip.",
-    "`534!ihtx <seconds> <powers> <effects>` applies the pipe chain progressively and joins the segments (powers 1–10; total output at most 180 seconds). Example: `534!ihtx 2 4 invert|sepia`.",
+    "`swirl=<strength>[;<x-scale>;<y-scale>;<x-center>;<y-center>[;<linear-fallout>]]` warps the image around a point; scales and centers default to 0.5, and fallout defaults to quadratic.",
+    "`534!ihtx <seconds> <powers> <effects>` applies the pipe chain progressively and joins the exports. No IHTX export-count, duration, or file-size cap is imposed by the bot; processing stops after 600 seconds. Example: `534!ihtx 2 4 invert|sepia`.",
+    "Example swirl: `534!ihtx 0.75 3 swirl=180;0.5;0.5;0.5;0.5;true`.",
     "Output: `.mp4` with H.264 video and AAC audio for broad playback compatibility.",
     "",
     "Example: `534!edit grayscale|pitch=+3;0;-3|speed=1.25`",
@@ -242,11 +244,6 @@ async function editIhtxAttachment(
       command,
       onProgress,
     );
-
-    const outputSize = (await stat(outputPath)).size;
-    if (outputSize > MAX_OUTPUT_BYTES) {
-      throw new Error("The IHTX video is over Discord's 25 MB upload limit.");
-    }
 
     return { path: outputPath, directory };
   } catch (error) {
