@@ -4,17 +4,23 @@ A prefix-based Discord bot that edits video attachments with FFmpeg using ordere
 
 ## Run & Operate
 
+- `pnpm --filter @workspace/scripts... install --frozen-lockfile` — install the bot's dependencies without installing unrelated services
+- Click **Run** to start the **534 Video Bot** console workflow. A successful Discord connection logs `534 video bot is online as ...`.
 - `pnpm --filter @workspace/api-server run dev` — run the API server (port 5000)
 - `pnpm --filter @workspace/scripts run bot:dev` — run the Discord video bot
+- `pnpm --filter @workspace/scripts run typecheck` — check the bot package
 - `pnpm run typecheck` — full typecheck across all packages
 - `pnpm run build` — typecheck + build all packages
 - `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
 - `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
 - Required secret: `DISCORD_BOT_TOKEN`
+- Required host tools: `ffmpeg`, `ffprobe`, ImageMagick (`magick`), and `rubberband`. These are available in the current Replit environment.
+- The Discord bot runs without the API server, database, or canvas preview service.
+- A full workspace install currently encounters a package-firewall rejection for the unrelated API server's locked `proxy-addr@2.0.7`. The filtered bot install succeeds; resolve the API dependency separately before running that service.
 
 ## Stack
 
-- pnpm workspaces, Node.js 24, TypeScript 5.9
+- pnpm workspaces, Node.js 20, TypeScript 5.9
 - API: Express 5
 - DB: PostgreSQL + Drizzle ORM
 - Validation: Zod (`zod/v4`), `drizzle-zod`
