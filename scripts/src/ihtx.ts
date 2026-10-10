@@ -72,7 +72,8 @@ function evaluateArithmetic(
   variables: Record<string, number> = {},
 ): number {
   const tokens: string[] = [];
-  const matcher = /\s*(?:(\d+(?:\.\d*)?|\.\d+)|([a-z]+)|(.))/iy;
+  const matcher =
+    /\s*(?:(\d+(?:\.\d*)?|\.\d+)|(\$(?:\{[a-z]+\}|[a-z]+)|[a-z]+)|(.))/iy;
   let position = 0;
   while (position < expression.length) {
     if (/^\s*$/.test(expression.slice(position))) break;
@@ -81,7 +82,16 @@ function evaluateArithmetic(
     if (!match) throw new Error("Invalid arithmetic expression.");
     const [, number, identifier, symbol] = match;
     if (number !== undefined) tokens.push(number);
-    else if (identifier !== undefined) tokens.push(identifier.toLowerCase());
+    else if (identifier !== undefined) {
+      const name = identifier
+        .toLowerCase()
+        .replace(/^\$?\{?/, "")
+        .replace(/\}?$/, "");
+      if (!/^[a-z]+$/.test(name)) {
+        throw new Error("Invalid variable in arithmetic expression.");
+      }
+      tokens.push(name);
+    }
     else if (symbol && "+-*/%()".includes(symbol)) tokens.push(symbol);
     else throw new Error("Invalid character in arithmetic expression.");
     position = matcher.lastIndex;
@@ -163,6 +173,39 @@ export function resolveIhtxPlusDuration(
   return seconds;
 }
 
+function readIhtxPlusArgument(
+  input: string,
+  offset: number,
+): { value: string; nextOffset: number } | undefined {
+  let start = offset;
+  while (/\s/.test(input[start] ?? "")) start += 1;
+  if (start >= input.length) return undefined;
+
+  if (input.startsWith("$((", start)) {
+    const expressionStart = start + 3;
+    let nestedParentheses = 0;
+    for (let index = expressionStart; index < input.length; index += 1) {
+      if (input[index] === "(") {
+        nestedParentheses += 1;
+      } else if (input[index] === ")") {
+        if (nestedParentheses > 0) {
+          nestedParentheses -= 1;
+        } else if (input[index + 1] === ")") {
+          return {
+            value: input.slice(expressionStart, index).trim(),
+            nextOffset: index + 2,
+          };
+        }
+      }
+    }
+    throw new Error("Unbalanced Bash arithmetic expansion in IHTXPlus.");
+  }
+
+  let end = start;
+  while (end < input.length && !/\s/.test(input[end]!)) end += 1;
+  return { value: input.slice(start, end), nextOffset: end };
+}
+
 function tokenizeFfmpegArguments(input: string): string[] {
   const args: string[] = [];
   let value = "";
@@ -212,13 +255,30 @@ function tokenizeFfmpegArguments(input: string): string[] {
 }
 
 export function parseIhtxPlusCommand(input: string): IhtxPlusCommand {
-  const match = /^(\S+)\s+(\S+)\s+(\S+)\s+([\s\S]+)$/.exec(input.trim());
-  if (!match) {
+  const normalizedInput = input.trim();
+  const exportsArgument = readIhtxPlusArgument(normalizedInput, 0);
+  const durationArgument = exportsArgument
+    ? readIhtxPlusArgument(normalizedInput, exportsArgument.nextOffset)
+    : undefined;
+  const noTrimArgument = durationArgument
+    ? readIhtxPlusArgument(normalizedInput, durationArgument.nextOffset)
+    : undefined;
+  const rawFfmpegArguments = noTrimArgument
+    ? normalizedInput.slice(noTrimArgument.nextOffset).trim()
+    : "";
+  if (
+    !exportsArgument?.value ||
+    !durationArgument?.value ||
+    !noTrimArgument?.value ||
+    !rawFfmpegArguments
+  ) {
     throw new Error(
       'Use `534!ihtxplus <exports> <duration-expression> <no-trim> [format=mp4|mov|mkv|avi|webm|mxf] <FFmpeg options>`, for example `534!ihtxplus -4 2 false -vf "eq=contrast=1.2"`.',
     );
   }
-  const [, rawExports, rawDuration, rawNoTrim, rawFfmpegArguments] = match;
+  const rawExports = exportsArgument.value;
+  const rawDuration = durationArgument.value;
+  const rawNoTrim = noTrimArgument.value;
 
   let exports: number;
   try {
