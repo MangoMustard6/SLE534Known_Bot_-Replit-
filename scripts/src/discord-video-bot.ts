@@ -15,8 +15,11 @@ import {
 import { generateHueClut } from "./hue-clut.js";
 import {
   parseIhtxCommand,
+  parseIhtxPlusCommand,
   renderIhtx,
+  resolveIhtxPlusDuration,
   type IhtxCommand,
+  type IhtxPlusCommand,
   type IhtxProgressCallback,
 } from "./ihtx.js";
 import { runProcess } from "./process-runner.js";
@@ -51,6 +54,7 @@ function usageMessage(): string {
     "`swirl=<strength>[;<x-scale>;<y-scale>;<x-center>;<y-center>[;<linear-fallout>]]` warps the image around a point; scales and centers default to 0.5, and fallout defaults to quadratic.",
     "`534!ihtx <seconds> <powers> <effects>` applies the pipe chain progressively and joins the exports. No IHTX export-count, duration, or file-size cap is imposed by the bot; processing stops after 600 seconds. Example: `534!ihtx 2 4 invert|sepia`.",
     "Example swirl: `534!ihtx 0.75 3 swirl=180;0.5;0.5;0.5;0.5;true`.",
+    '`534!ihtxplus <exports> <duration-expression> <no-trim> [format=mp4|mov|mkv|avi|webm|mxf] <FFmpeg options>` applies raw FFmpeg options to each progressive export. A negative export count joins results in reverse. Example: `534!ihtxplus -4 2 false format=mkv -vf "eq=contrast=1.2"`. FFmpeg options are passed without a shell and can access files or network resources available to this bot.',
     "Output: `.mp4` with H.264 video and AAC audio for broad playback compatibility.",
     "",
     "Example: `534!edit grayscale|pitch=+3;0;-3|speed=1.25`",
@@ -83,7 +87,9 @@ async function downloadAttachment(url: string, destination: string) {
   }
 }
 
-async function validateVideo(inputPath: string): Promise<boolean> {
+async function validateVideo(
+  inputPath: string,
+): Promise<{ hasAudio: boolean; durationSeconds: number }> {
   const { stdout: streamType } = await runProcess(
     "ffprobe",
     [
@@ -139,7 +145,10 @@ async function validateVideo(inputPath: string): Promise<boolean> {
     ],
     15_000,
   );
-  return audioStreamType.trim() === "audio";
+  return {
+    hasAudio: audioStreamType.trim() === "audio",
+    durationSeconds: duration,
+  };
 }
 
 function isVideoAttachment(attachment: {
@@ -158,12 +167,16 @@ async function prepareVideoInput(
     name: string;
   },
   directory: string,
-): Promise<{ inputPath: string; hasAudio: boolean }> {
+): Promise<{
+  inputPath: string;
+  hasAudio: boolean;
+  durationSeconds: number;
+}> {
   const extension = extname(attachment.name).toLowerCase() || ".video";
   const inputPath = join(directory, `input${extension}`);
   await downloadAttachment(attachment.url, inputPath);
-  const hasAudio = await validateVideo(inputPath);
-  return { inputPath, hasAudio };
+  const videoInfo = await validateVideo(inputPath);
+  return { inputPath, ...videoInfo };
 }
 
 async function editAttachment(
@@ -252,6 +265,49 @@ async function editIhtxAttachment(
   }
 }
 
+async function editIhtxPlusAttachment(
+  attachment: {
+    url: string;
+    name: string;
+  },
+  command: IhtxPlusCommand,
+  onProgress?: IhtxProgressCallback,
+): Promise<{ path: string; directory: string }> {
+  const directory = await mkdtemp(join(tmpdir(), "534-ihtxplus-edit-"));
+  const outputPath = join(directory, `ihtxplus_custom.${command.outputFormat}`);
+
+  try {
+    const { inputPath, hasAudio, durationSeconds } = await prepareVideoInput(
+      attachment,
+      directory,
+    );
+    const segmentSeconds = resolveIhtxPlusDuration(command, durationSeconds);
+    await renderIhtx(
+      inputPath,
+      outputPath,
+      directory,
+      hasAudio,
+      {
+        segmentSeconds,
+        powers: Math.abs(command.exports),
+        effectInput: "",
+        effects: [],
+      },
+      onProgress,
+      {
+        noTrim: command.noTrim,
+        reverseJoin: command.exports < 0,
+        outputFormat: command.outputFormat,
+        ffmpegArguments: command.ffmpegArguments,
+      },
+    );
+    return { path: outputPath, directory };
+  } catch (error) {
+    await rm(directory, { recursive: true, force: true });
+    throw error;
+  }
+}
+
 const token = process.env.DISCORD_BOT_TOKEN;
 if (!token) {
   throw new Error(
@@ -284,15 +340,21 @@ client.on("messageCreate", async (message) => {
     return;
   }
   const isIhtx = commandName === "ihtx";
-  if (commandName !== "edit" && !isIhtx) {
+  const isIhtxPlus = commandName === "ihtxplus";
+  if (commandName !== "edit" && !isIhtx && !isIhtxPlus) {
     return;
   }
 
   let effectInput = "";
   let effects: ReturnType<typeof parseEffectChain>;
   let ihtxCommand: IhtxCommand | undefined;
+  let ihtxPlusCommand: IhtxPlusCommand | undefined;
   try {
-    if (isIhtx) {
+    if (isIhtxPlus) {
+      ihtxPlusCommand = parseIhtxPlusCommand(remaining.join(" "));
+      effectInput = "";
+      effects = [];
+    } else if (isIhtx) {
       ihtxCommand = parseIhtxCommand(remaining.join(" "));
       effectInput = ihtxCommand.effectInput;
       effects = ihtxCommand.effects;
@@ -346,28 +408,41 @@ client.on("messageCreate", async (message) => {
 
   try {
     status = await message.reply(
-      isIhtx ? "Preparing your progressive IHTX edit…" : "Editing your video…",
+      isIhtxPlus
+        ? "Preparing your progressive IHTXPlus edit…"
+        : isIhtx
+          ? "Preparing your progressive IHTX edit…"
+          : "Editing your video…",
     );
-    const result = ihtxCommand
-      ? await editIhtxAttachment(attachment, ihtxCommand, async (progress) => {
-          await status?.edit(progress).catch(() => undefined);
-        })
-      : await editAttachment(attachment, effectInput, async (completed, total) => {
-          if (!status) return;
-          const progressText =
-            completed === total
-              ? `Pitch layers complete (${completed}/${total}). Rendering final video…`
-              : `Pitch processing: ${completed}/${total} layers complete…`;
-          await status.edit(progressText).catch(() => undefined);
-        });
+    const onIhtxProgress = async (progress: string) => {
+      await status?.edit(progress).catch(() => undefined);
+    };
+    const result = ihtxPlusCommand
+      ? await editIhtxPlusAttachment(attachment, ihtxPlusCommand, onIhtxProgress)
+      : ihtxCommand
+        ? await editIhtxAttachment(attachment, ihtxCommand, onIhtxProgress)
+        : await editAttachment(attachment, effectInput, async (completed, total) => {
+            if (!status) return;
+            const progressText =
+              completed === total
+                ? `Pitch layers complete (${completed}/${total}). Rendering final video…`
+                : `Pitch processing: ${completed}/${total} layers complete…`;
+            await status.edit(progressText).catch(() => undefined);
+          });
     workDirectory = result.directory;
     const file = new AttachmentBuilder(result.path, {
-      name: ihtxCommand ? "ihtx_custom.mp4" : "edited.mp4",
+      name: ihtxPlusCommand
+        ? `ihtxplus_custom.${ihtxPlusCommand.outputFormat}`
+        : ihtxCommand
+          ? "ihtx_custom.mp4"
+          : "edited.mp4",
     });
     await status.edit({
-      content: ihtxCommand
-        ? `Done. Built ${ihtxCommand.powers} progressive IHTX segment(s) using ${effects.map((effect) => effect.name).join(" → ")}.`
-        : `Done. Applied: ${effects.map((effect) => effect.name).join(" → ")}`,
+      content: ihtxPlusCommand
+        ? `Done. Built ${Math.abs(ihtxPlusCommand.exports)} progressive IHTXPlus export(s)${ihtxPlusCommand.exports < 0 ? " in reverse order" : ""}.`
+        : ihtxCommand
+          ? `Done. Built ${ihtxCommand.powers} progressive IHTX segment(s) using ${effects.map((effect) => effect.name).join(" → ")}.`
+          : `Done. Applied: ${effects.map((effect) => effect.name).join(" → ")}`,
       files: [file],
     });
   } catch (error) {

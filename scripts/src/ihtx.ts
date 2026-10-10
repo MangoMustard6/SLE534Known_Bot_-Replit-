@@ -22,15 +22,17 @@ export interface IhtxCommand {
 
 export interface IhtxPlusCommand {
   exports: number;
-  durationSeconds: number | "vidlen";
+  durationExpression: string;
   noTrim: boolean;
-  effectInput: string;
-  effects: VideoEffect[];
+  outputFormat: "mp4" | "mov" | "mkv" | "avi" | "webm" | "mxf";
+  ffmpegArguments: string[];
 }
 
 export interface IhtxRenderOptions {
   noTrim?: boolean;
   reverseJoin?: boolean;
+  ffmpegArguments?: string[];
+  outputFormat?: IhtxPlusCommand["outputFormat"];
 }
 
 export type IhtxProgressCallback = (message: string) => Promise<void> | void;
@@ -65,36 +67,179 @@ export function parseIhtxCommand(input: string): IhtxCommand {
   return { segmentSeconds, powers, effectInput, effects };
 }
 
+function evaluateArithmetic(
+  expression: string,
+  variables: Record<string, number> = {},
+): number {
+  const tokens: string[] = [];
+  const matcher = /\s*(?:(\d+(?:\.\d*)?|\.\d+)|([a-z]+)|(.))/iy;
+  let position = 0;
+  while (position < expression.length) {
+    if (/^\s*$/.test(expression.slice(position))) break;
+    matcher.lastIndex = position;
+    const match = matcher.exec(expression);
+    if (!match) throw new Error("Invalid arithmetic expression.");
+    const [, number, identifier, symbol] = match;
+    if (number !== undefined) tokens.push(number);
+    else if (identifier !== undefined) tokens.push(identifier.toLowerCase());
+    else if (symbol && "+-*/%()".includes(symbol)) tokens.push(symbol);
+    else throw new Error("Invalid character in arithmetic expression.");
+    position = matcher.lastIndex;
+  }
+
+  let index = 0;
+  const parseExpression = (): number => {
+    let value = parseTerm();
+    while (tokens[index] === "+" || tokens[index] === "-") {
+      const operator = tokens[index++];
+      const right = parseTerm();
+      value = operator === "+" ? value + right : value - right;
+    }
+    return value;
+  };
+  const parseTerm = (): number => {
+    let value = parseUnary();
+    while (
+      tokens[index] === "*" ||
+      tokens[index] === "/" ||
+      tokens[index] === "%"
+    ) {
+      const operator = tokens[index++];
+      const right = parseUnary();
+      if ((operator === "/" || operator === "%") && right === 0) {
+        throw new Error("Cannot divide by zero in an arithmetic expression.");
+      }
+      value =
+        operator === "*"
+          ? value * right
+          : operator === "/"
+            ? value / right
+            : value % right;
+    }
+    return value;
+  };
+  const parseUnary = (): number => {
+    if (tokens[index] === "+" || tokens[index] === "-") {
+      const operator = tokens[index++];
+      const value = parseUnary();
+      return operator === "-" ? -value : value;
+    }
+    return parsePrimary();
+  };
+  const parsePrimary = (): number => {
+    const token = tokens[index++];
+    if (token === "(") {
+      const value = parseExpression();
+      if (tokens[index++] !== ")") {
+        throw new Error("Unbalanced parentheses in arithmetic expression.");
+      }
+      return value;
+    }
+    if (token && (/^\d/.test(token) || /^\./.test(token))) {
+      return Number(token);
+    }
+    if (token && Object.hasOwn(variables, token)) return variables[token]!;
+    throw new Error("Unknown or missing value in arithmetic expression.");
+  };
+
+  if (tokens.length === 0) throw new Error("Arithmetic expression is empty.");
+  const result = parseExpression();
+  if (index !== tokens.length || !Number.isFinite(result)) {
+    throw new Error("Arithmetic expression must have a finite numeric result.");
+  }
+  return result;
+}
+
+export function resolveIhtxPlusDuration(
+  command: IhtxPlusCommand,
+  inputDurationSeconds: number,
+): number {
+  const seconds = evaluateArithmetic(command.durationExpression, {
+    vidlen: inputDurationSeconds,
+  });
+  if (!Number.isFinite(seconds) || seconds < 0.1) {
+    throw new Error("IHTXPlus duration must resolve to at least 0.1 seconds.");
+  }
+  return seconds;
+}
+
+function tokenizeFfmpegArguments(input: string): string[] {
+  const args: string[] = [];
+  let value = "";
+  let quote: "'" | '"' | undefined;
+  let escaped = false;
+  let started = false;
+
+  const push = () => {
+    if (started) args.push(value);
+    value = "";
+    started = false;
+  };
+
+  for (const character of input) {
+    if (escaped) {
+      value += character;
+      started = true;
+      escaped = false;
+    } else if (character === "\\" && quote !== "'") {
+      escaped = true;
+      started = true;
+    } else if (quote) {
+      if (character === quote) quote = undefined;
+      else value += character;
+      started = true;
+    } else if (character === "'" || character === '"') {
+      quote = character;
+      started = true;
+    } else if (/\s/.test(character)) {
+      push();
+    } else if (character === "\0") {
+      throw new Error("IHTXPlus FFmpeg options cannot contain null characters.");
+    } else {
+      value += character;
+      started = true;
+    }
+  }
+
+  if (escaped || quote) {
+    throw new Error("IHTXPlus FFmpeg options contain an unfinished quote or escape.");
+  }
+  push();
+  if (args.length === 0) {
+    throw new Error("Add FFmpeg options after the IHTXPlus command settings.");
+  }
+  return args;
+}
+
 export function parseIhtxPlusCommand(input: string): IhtxPlusCommand {
-  const [rawExports, rawDuration, rawNoTrim, ...effectParts] = input
-    .trim()
-    .split(/\s+/);
-  const effectInput = effectParts.join(" ").trim();
-  if (!rawExports || !rawDuration || !rawNoTrim || !effectInput) {
+  const match = /^(\S+)\s+(\S+)\s+(\S+)\s+([\s\S]+)$/.exec(input.trim());
+  if (!match) {
     throw new Error(
-      "Use `534!ihtxplus <exports> <seconds|vidlen> <no-trim> <effects>`, for example `534!ihtxplus -4 2 false invert|sepia`.",
+      'Use `534!ihtxplus <exports> <duration-expression> <no-trim> [format=mp4|mov|mkv|avi|webm|mxf] <FFmpeg options>`, for example `534!ihtxplus -4 2 false -vf "eq=contrast=1.2"`.',
     );
   }
+  const [, rawExports, rawDuration, rawNoTrim, rawFfmpegArguments] = match;
 
-  if (!/^-?\d+$/.test(rawExports)) {
-    throw new Error("IHTXPlus exports must be a non-zero whole number.");
+  let exports: number;
+  try {
+    exports = evaluateArithmetic(rawExports);
+  } catch {
+    throw new Error("IHTXPlus exports must be a finite arithmetic expression.");
   }
-  const exports = Number(rawExports);
   if (!Number.isSafeInteger(exports) || exports === 0) {
-    throw new Error("IHTXPlus exports must be a non-zero whole number.");
+    throw new Error("IHTXPlus exports must resolve to a non-zero whole number.");
   }
 
-  let durationSeconds: number | "vidlen";
-  if (rawDuration.toLowerCase() === "vidlen") {
-    durationSeconds = "vidlen";
-  } else {
-    if (!/^(?:\d+(?:\.\d*)?|\.\d+)$/.test(rawDuration)) {
-      throw new Error("IHTXPlus duration must be seconds or `vidlen`.");
-    }
-    durationSeconds = Number(rawDuration);
-    if (!Number.isFinite(durationSeconds) || durationSeconds < 0.1) {
-      throw new Error("IHTXPlus duration must be at least 0.1 seconds.");
-    }
+  let sampleDuration: number;
+  try {
+    sampleDuration = evaluateArithmetic(rawDuration, { vidlen: 1 });
+  } catch {
+    throw new Error(
+      "IHTXPlus duration must be seconds or an arithmetic expression using vidlen.",
+    );
+  }
+  if (!Number.isFinite(sampleDuration) || sampleDuration < 0.1) {
+    throw new Error("IHTXPlus duration must resolve to at least 0.1 seconds.");
   }
 
   const noTrimValue = rawNoTrim.toLowerCase();
@@ -104,12 +249,26 @@ export function parseIhtxPlusCommand(input: string): IhtxPlusCommand {
     throw new Error("IHTXPlus no-trim must be true or false.");
   }
 
+  let outputFormat: IhtxPlusCommand["outputFormat"] = "mp4";
+  let ffmpegInput = rawFfmpegArguments;
+  const formatMatch =
+    /^format=(default|mp4|mov|mkv|avi|webm|mxf)\s+([\s\S]+)$/i.exec(
+    rawFfmpegArguments,
+    );
+  if (formatMatch) {
+    outputFormat =
+      formatMatch[1]?.toLowerCase() === "default"
+        ? "mp4"
+        : (formatMatch[1]?.toLowerCase() as IhtxPlusCommand["outputFormat"]);
+    ffmpegInput = formatMatch[2]!;
+  }
+
   return {
     exports,
-    durationSeconds,
+    durationExpression: rawDuration,
     noTrim: trueValues.has(noTrimValue),
-    effectInput,
-    effects: parseEffectChain(effectInput),
+    outputFormat,
+    ffmpegArguments: tokenizeFfmpegArguments(ffmpegInput),
   };
 }
 
@@ -174,6 +333,7 @@ export async function renderIhtx(
         processedAudioPath,
         hueClutPaths,
         options.noTrim ? undefined : command.segmentSeconds,
+        options.ffmpegArguments,
       ),
       timeoutWithinDeadline(IHTX_TIMEOUT_MS, deadlineAt),
     );
@@ -256,10 +416,17 @@ export async function renderIhtx(
   const concatListPath = join(directory, "ihtx-concat.txt");
   await writeFile(
     concatListPath,
-    segmentPaths
+    (options.reverseJoin ? [...segmentPaths].reverse() : segmentPaths)
       .map((path) => `file '${path.replaceAll("'", "'\\''")}'`)
       .join("\n"),
   );
+  const format =
+    options.outputFormat ??
+    (outputPath.toLowerCase().endsWith(".mkv") ? "mkv" : "mp4");
+  const transcodeOutput = format === "avi" || format === "webm" || format === "mxf";
+  const concatOutputPath = transcodeOutput
+    ? join(directory, "ihtx-concatenated.ts")
+    : outputPath;
   await runProcess(
     "ffmpeg",
     [
@@ -279,10 +446,84 @@ export async function renderIhtx(
       "0:a?",
       "-c",
       "copy",
-      "-movflags",
-      "+faststart",
-      outputPath,
+      ...(format === "mp4" || format === "mov"
+        ? ["-movflags", "+faststart"]
+        : []),
+      concatOutputPath,
     ],
     timeoutWithinDeadline(IHTX_TIMEOUT_MS, deadlineAt),
   );
+
+  if (transcodeOutput) {
+    const outputCodecArguments =
+      format === "webm"
+        ? [
+            "-c:v",
+            "libvpx-vp9",
+            "-deadline",
+            "realtime",
+            "-cpu-used",
+            "5",
+            "-crf",
+            "32",
+            "-b:v",
+            "0",
+            "-c:a",
+            "libopus",
+            "-b:a",
+            "128k",
+            "-f",
+            "webm",
+          ]
+        : format === "avi"
+          ? [
+              "-c:v",
+              "mpeg4",
+              "-q:v",
+              "4",
+              "-c:a",
+              "libmp3lame",
+              "-b:a",
+              "192k",
+              "-f",
+              "avi",
+            ]
+          : [
+              "-c:v",
+              "mpeg2video",
+              "-r",
+              "25",
+              "-q:v",
+              "4",
+              "-pix_fmt",
+              "yuv420p",
+              "-c:a",
+              "pcm_s16le",
+              "-ar",
+              "48000",
+              "-f",
+              "mxf",
+            ];
+    await onProgress?.(`IHTX: encoding final ${format.toUpperCase()} output…`);
+    await runProcess(
+      "ffmpeg",
+      [
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-i",
+        concatOutputPath,
+        "-map",
+        "0:v:0",
+        "-map",
+        "0:a?",
+        ...outputCodecArguments,
+        "-threads",
+        "2",
+        outputPath,
+      ],
+      timeoutWithinDeadline(IHTX_TIMEOUT_MS, deadlineAt),
+    );
+  }
 }

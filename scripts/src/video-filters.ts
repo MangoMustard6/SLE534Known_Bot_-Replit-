@@ -246,6 +246,7 @@ export function buildFfmpegArguments(
   processedAudioPath?: string,
   hueClutPaths: string[] = [],
   durationSeconds?: number,
+  extraFfmpegArguments: string[] = [],
 ): string[] {
   const expectedHueCluts = effects.filter(
     (effect) => effect.name === "hue",
@@ -260,6 +261,88 @@ export function buildFfmpegArguments(
   let currentLabel = "0:v";
   let labelIndex = 0;
   let hueClutIndex = 0;
+  const remainingFfmpegArguments: string[] = [];
+  const customVideoFilters: string[] = [];
+  let hasCustomComplexFilter = false;
+
+  for (let index = 0; index < extraFfmpegArguments.length; index += 1) {
+    const argument = extraFfmpegArguments[index];
+    const equalsIndex = argument?.indexOf("=") ?? -1;
+    const option = equalsIndex < 0 ? argument : argument?.slice(0, equalsIndex);
+    const inlineValue =
+      equalsIndex < 0 ? undefined : argument?.slice(equalsIndex + 1);
+    if (option === "-vf" || option === "-filter:v" || option === "-filter:v:0") {
+      const filter = inlineValue ?? extraFfmpegArguments[index + 1];
+      if (!filter) {
+        throw new Error(`${option} needs a video filter value.`);
+      }
+      customVideoFilters.push(filter);
+      if (inlineValue === undefined) index += 1;
+    } else {
+      if (
+        option === "-filter_complex" ||
+        option === "-lavfi" ||
+        option === "-filter_complex_script"
+      ) {
+        hasCustomComplexFilter = true;
+      }
+      remainingFfmpegArguments.push(argument!);
+    }
+  }
+
+  if (hasCustomComplexFilter) {
+    if (customVideoFilters.length > 0) {
+      throw new Error(
+        "Use either a custom -filter_complex graph or -vf filters, not both.",
+      );
+    }
+    const hasMap = remainingFfmpegArguments.some(
+      (argument, index) =>
+        argument === "-map" ||
+        argument.startsWith("-map=") ||
+        (index > 0 && remainingFfmpegArguments[index - 1] === "-map"),
+    );
+    if (!hasMap) {
+      throw new Error(
+        "A custom -filter_complex graph must include an explicit -map output.",
+      );
+    }
+    const args = [
+      "-hide_banner",
+      "-loglevel",
+      "error",
+      "-y",
+      "-i",
+      inputPath,
+      ...(processedAudioPath ? ["-i", processedAudioPath] : []),
+      ...hueClutPaths.flatMap((path) => ["-i", path]),
+      "-c:v",
+      "libx264",
+      "-preset",
+      "veryfast",
+      "-crf",
+      "23",
+      "-pix_fmt",
+      "yuv420p",
+      "-c:a",
+      "aac",
+      "-b:a",
+      "128k",
+      "-threads",
+      "2",
+    ];
+    if (durationSeconds !== undefined) {
+      args.push("-t", String(durationSeconds));
+    }
+    args.push(...remainingFfmpegArguments);
+    if (outputPath.toLowerCase().endsWith(".ts")) {
+      args.push("-f", "mpegts");
+    } else {
+      args.push("-movflags", "+faststart");
+    }
+    args.push(outputPath);
+    return args;
+  }
 
   const addFilter = (filter: string) => {
     const nextLabel = `v${labelIndex++}`;
@@ -339,6 +422,12 @@ export function buildFfmpegArguments(
     }
   }
 
+  for (const filter of customVideoFilters) {
+    const nextLabel = `v${labelIndex++}`;
+    graph.push(`[${currentLabel}]${filter}[${nextLabel}]`);
+    currentLabel = nextLabel;
+  }
+
   const paddedLabel = `v${labelIndex}`;
   graph.push(
     `[${currentLabel}]pad=ceil(iw/2)*2:ceil(ih/2)*2[${paddedLabel}]`,
@@ -392,6 +481,7 @@ export function buildFfmpegArguments(
   } else {
     args.push("-movflags", "+faststart");
   }
+  args.push(...remainingFfmpegArguments);
   args.push(outputPath);
 
   return args;

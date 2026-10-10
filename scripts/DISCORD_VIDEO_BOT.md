@@ -5,6 +5,7 @@ The bot uses the `534!` prefix. Attach a video to the command, or reply to a mes
 ```text
 534!edit grayscale|invert|speed|sepia|hue|mirrorhl|mirrorhr
 534!ihtx 2 4 invert|sepia
+534!ihtxplus -4 2 false format=webm -vf "eq=contrast=1.2"
 ```
 
 Effects are applied from left to right. Use `|` between effects.
@@ -40,7 +41,11 @@ The `pitch` values create one separate copy of the current audio per value, shif
 
 `534!ihtx <seconds> <powers> <effects>` applies the named pipe-effect chain to each preceding export, then joins the progressive exports. Segment time must be at least 0.1 seconds and powers must be a positive whole number. IHTX has no bot-imposed export-count, total-duration, or output-file-size cap; the entire processing job has a 600-second deadline. The bot no longer imposes a combined pitch-layer cap across IHTX powers.
 
-The output is an `.mp4` file with H.264 video and AAC audio for playback compatibility. Discord may reject a file larger than its upload limit. The source video is still limited to 25 MB and 3 minutes.
+`534!ihtxplus <exports> <duration-expression> <no-trim> [format=mp4|mov|mkv|avi|webm|mxf] <FFmpeg options>` adds the source project's iterative-export mode. Export counts and duration accept basic arithmetic (`+`, `-`, `*`, `/`, `%`, and parentheses); duration expressions can use `vidlen`. A negative export count reverses the final join order. When `no-trim` is false, each export is normalized to the requested duration; when true, each export keeps its full duration. The output defaults to MP4; `format=` selects MP4, MOV, MKV, AVI, WebM, or MXF. Options are parsed into arguments and passed directly to FFmpeg, never through a shell. `-vf` filters are merged into the bot's video graph; a custom `-filter_complex` must include an explicit `-map`. The entire job has the same 600-second deadline.
+
+Anyone who can invoke the bot can use `ihtxplus`. Raw FFmpeg options can read files and access network resources available to the bot process, so only enable the bot in Discord servers where that access is acceptable. FFmpeg does not receive environment variables whose names indicate credentials (such as tokens, secrets, passwords, or API keys). This command does not execute shell syntax.
+
+`534!edit` and `534!ihtx` output `.mp4` files with H.264 video and AAC audio for playback compatibility. `ihtxplus` uses the selected output container. Discord may reject a file larger than its upload limit. The source video is still limited to 25 MB and 3 minutes.
 
 Swirl parameters are `strength;x-scale;y-scale;x-center;y-center;linear-fallout`. Scale and center default to `0.5`; fallout defaults to quadratic, and `true` selects linear fallout. Example: `swirl=180;0.5;0.5;0.5;0.5;true`.
 

@@ -1,2 +1,3 @@
 - [Workspace package installation](workspace-package-installation.md) — when package installation targets the workspace root, install with a package filter instead.
 - [Pitch mix gain](pitch-mix-gain.md) — keep the video bot's pitch layers unnormalized; summed layers may clip.
+- [IHTXPlus access](ihtxplus-access.md) — raw FFmpeg options are available to anyone who can use the Discord bot; never route them through a shell.

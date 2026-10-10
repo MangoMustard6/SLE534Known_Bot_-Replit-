@@ -6,7 +6,8 @@
   "scripts": {
     "bot:dev": "tsx ./src/discord-video-bot.ts",
     "hello": "tsx ./src/hello.ts",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "tsx --test src/*.test.ts"
   },
   "devDependencies": {
     "@types/node": "catalog:",

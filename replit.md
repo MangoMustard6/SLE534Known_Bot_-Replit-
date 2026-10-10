@@ -47,6 +47,7 @@ A prefix-based Discord bot that edits video attachments with FFmpeg using ordere
 ## Product
 
 - `534!edit` applies ordered color, invert, speed, hue, pitch-mix, and mirror effects to an attached video.
+- `534!ihtx` builds progressive exports with named effects; `534!ihtxplus` adds raw FFmpeg options, optional full-length exports, signed join order, arithmetic counts/durations, and MP4/MOV/MKV/AVI/WebM/MXF output. Both stop after 600 seconds.
 
 ## User preferences
 

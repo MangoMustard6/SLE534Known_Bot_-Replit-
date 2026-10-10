@@ -2,6 +2,17 @@ import { spawn } from "node:child_process";
 
 export const IHTX_TIMEOUT_MS = 600_000;
 
+function subprocessEnvironment(): NodeJS.ProcessEnv {
+  return Object.fromEntries(
+    Object.entries(process.env).filter(
+      ([name]) =>
+        !/(?:TOKEN|SECRET|PASSWORD|API[_-]?KEY|ACCESS[_-]?KEY|CREDENTIAL|PRIVATE[_-]?KEY|DATABASE_URL)/i.test(
+          name,
+        ),
+    ),
+  );
+}
+
 export function timeoutWithinDeadline(
   defaultTimeoutMs: number,
   deadlineAt?: number,
@@ -21,7 +32,10 @@ export function runProcess(
   timeoutMs: number,
 ): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(command, args, {
+      stdio: ["ignore", "pipe", "pipe"],
+      env: subprocessEnvironment(),
+    });
     let stdout = "";
     let stderr = "";
     let settled = false;
