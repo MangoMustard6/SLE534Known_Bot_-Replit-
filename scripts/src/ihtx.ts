@@ -20,6 +20,19 @@ export interface IhtxCommand {
   effects: VideoEffect[];
 }
 
+export interface IhtxPlusCommand {
+  exports: number;
+  durationSeconds: number | "vidlen";
+  noTrim: boolean;
+  effectInput: string;
+  effects: VideoEffect[];
+}
+
+export interface IhtxRenderOptions {
+  noTrim?: boolean;
+  reverseJoin?: boolean;
+}
+
 export type IhtxProgressCallback = (message: string) => Promise<void> | void;
 
 export function parseIhtxCommand(input: string): IhtxCommand {
@@ -52,6 +65,54 @@ export function parseIhtxCommand(input: string): IhtxCommand {
   return { segmentSeconds, powers, effectInput, effects };
 }
 
+export function parseIhtxPlusCommand(input: string): IhtxPlusCommand {
+  const [rawExports, rawDuration, rawNoTrim, ...effectParts] = input
+    .trim()
+    .split(/\s+/);
+  const effectInput = effectParts.join(" ").trim();
+  if (!rawExports || !rawDuration || !rawNoTrim || !effectInput) {
+    throw new Error(
+      "Use `534!ihtxplus <exports> <seconds|vidlen> <no-trim> <effects>`, for example `534!ihtxplus -4 2 false invert|sepia`.",
+    );
+  }
+
+  if (!/^-?\d+$/.test(rawExports)) {
+    throw new Error("IHTXPlus exports must be a non-zero whole number.");
+  }
+  const exports = Number(rawExports);
+  if (!Number.isSafeInteger(exports) || exports === 0) {
+    throw new Error("IHTXPlus exports must be a non-zero whole number.");
+  }
+
+  let durationSeconds: number | "vidlen";
+  if (rawDuration.toLowerCase() === "vidlen") {
+    durationSeconds = "vidlen";
+  } else {
+    if (!/^(?:\d+(?:\.\d*)?|\.\d+)$/.test(rawDuration)) {
+      throw new Error("IHTXPlus duration must be seconds or `vidlen`.");
+    }
+    durationSeconds = Number(rawDuration);
+    if (!Number.isFinite(durationSeconds) || durationSeconds < 0.1) {
+      throw new Error("IHTXPlus duration must be at least 0.1 seconds.");
+    }
+  }
+
+  const noTrimValue = rawNoTrim.toLowerCase();
+  const trueValues = new Set(["1", "true", "t", "y", "yes", "+", "on"]);
+  const falseValues = new Set(["0", "false", "f", "n", "no", "-", "off"]);
+  if (!trueValues.has(noTrimValue) && !falseValues.has(noTrimValue)) {
+    throw new Error("IHTXPlus no-trim must be true or false.");
+  }
+
+  return {
+    exports,
+    durationSeconds,
+    noTrim: trueValues.has(noTrimValue),
+    effectInput,
+    effects: parseEffectChain(effectInput),
+  };
+}
+
 export async function renderIhtx(
   inputPath: string,
   outputPath: string,
@@ -59,6 +120,7 @@ export async function renderIhtx(
   hasAudio: boolean,
   command: IhtxCommand,
   onProgress?: IhtxProgressCallback,
+  options: IhtxRenderOptions = {},
 ): Promise<void> {
   const segmentPaths: string[] = [];
   const deadlineAt = Date.now() + IHTX_TIMEOUT_MS;
@@ -92,7 +154,9 @@ export async function renderIhtx(
       },
       {
         timeoutDeadline: deadlineAt,
-        inputDurationSeconds: command.segmentSeconds,
+        ...(options.noTrim
+          ? {}
+          : { inputDurationSeconds: command.segmentSeconds }),
       },
     );
 
@@ -109,10 +173,40 @@ export async function renderIhtx(
         effects,
         processedAudioPath,
         hueClutPaths,
-        command.segmentSeconds,
+        options.noTrim ? undefined : command.segmentSeconds,
       ),
       timeoutWithinDeadline(IHTX_TIMEOUT_MS, deadlineAt),
     );
+
+    if (options.noTrim) {
+      await onProgress?.(
+        `IHTX: preserving full export ${power}/${command.powers}…`,
+      );
+      await runProcess(
+        "ffmpeg",
+        [
+          "-hide_banner",
+          "-loglevel",
+          "error",
+          "-y",
+          "-i",
+          renderedPath,
+          "-map",
+          "0:v:0",
+          "-map",
+          "0:a?",
+          "-c",
+          "copy",
+          "-f",
+          "mpegts",
+          segmentPath,
+        ],
+        timeoutWithinDeadline(IHTX_TIMEOUT_MS, deadlineAt),
+      );
+      segmentPaths.push(segmentPath);
+      currentInputPath = segmentPath;
+      continue;
+    }
 
     await onProgress?.(
       `IHTX: normalizing export ${power}/${command.powers} duration…`,

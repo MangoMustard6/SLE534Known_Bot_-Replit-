@@ -1,0 +1,346 @@
+export interface IcfContext {
+  /** Raw argument string after the command name (what {args} was). */
+  args: string;
+  /** Media URL ({media}). */
+  media: string;
+  /** Unique id for the output file ({uuid}). */
+  uuid: string;
+  /** Avatar URL ({avatar}). */
+  avatar: string;
+  /** User tag ({usertag}). */
+  usertag: string;
+  /** Guild premium tier (json.guild.premium_tier). Defaults to 0. */
+  premiumTier?: number;
+  /** Remaining tagscript ops ({__iterationsRemaining}); purely cosmetic. */
+  iterationsRemaining?: number | string;
+  /** Unix seconds when the command started ({unix}). Defaults to now. */
+  unix?: number;
+  /**
+   * Emit curl/wget download commands for every `load` header so the script is
+   * self-contained. Defaults to true. Set false if your runtime already
+   * handles `load` lines itself.
+   */
+  download?: boolean;
+}
+
+export interface IcfResult {
+  /** `load <url> <name>` lines the NotSoBot runtime should execute first. */
+  loads: string[];
+  /** The bash script to run (FILE_1 must be provided in the environment). */
+  script: string;
+}
+
+/* ------------------------------------------------------------------ */
+/* Unicode decoding                                                    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Decodes \uXXXX and \u{X...} escapes into real characters.
+ * A doubled backslash (\\u007c) is treated as an escaped backslash and left
+ * as the literal text \u007c, so people can still write it literally.
+ */
+export function decodeUnicode(input: string): string {
+  return input.replace(
+    /(\\\\)|\\u\{([0-9a-fA-F]{1,6})\}|\\u([0-9a-fA-F]{4})/g,
+    (m, dbl: string | undefined, braced: string | undefined, plain: string | undefined) => {
+      if (dbl) return "\\"; // \\ -> \ (keeps following "u007c" literal)
+      const hex = braced ?? plain!;
+      const cp = parseInt(hex, 16);
+      if (cp > 0x10ffff) return m;
+      try {
+        return String.fromCodePoint(cp);
+      } catch {
+        return m;
+      }
+    },
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Argument parsing                                                    */
+/* ------------------------------------------------------------------ */
+
+interface ParsedArgs {
+  argv: string[];
+  /** Everything from the 6th word (arg:5) onward — the ffmpeg options. */
+  rest: string;
+}
+
+function parseArgs(args: string): ParsedArgs {
+  const re = /\S+/g;
+  const argv: string[] = [];
+  let restStart = -1;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(args)) !== null) {
+    if (argv.length === 5) restStart = m.index;
+    argv.push(m[0]);
+  }
+  return { argv, rest: restStart === -1 ? "" : args.slice(restStart) };
+}
+
+/* ------------------------------------------------------------------ */
+/* Arithmetic helpers                                                  */
+/* ------------------------------------------------------------------ */
+
+/** Strips a wrapping $(( ... )) or (( ... )) if the user typed one. */
+function unwrapArith(expr: string): string {
+  const t = expr.trim();
+  const m = /^\$?\(\((.*)\)\)$/.exec(t);
+  return (m ? m[1] : t).trim();
+}
+
+/**
+ * Whitelist-validates an arithmetic expression so it can't smuggle in shell.
+ * Allowed: digits, . + - * / % ( ) whitespace, and the named variables.
+ */
+function safeArith(raw: string, vars: string[], fallback: string): string {
+  const expr = unwrapArith(decodeUnicode(raw));
+  if (!expr) return fallback;
+  const stripped = vars.reduce((s, v) => s.split(v).join(""), expr);
+  if (!/^[0-9.+\-*/%()\s]*$/.test(stripped)) return fallback;
+  // balanced parens
+  let depth = 0;
+  for (const c of expr) {
+    if (c === "(") depth++;
+    else if (c === ")" && --depth < 0) return fallback;
+  }
+  return depth === 0 ? expr : fallback;
+}
+
+/** Single-quote a string for bash. */
+function shq(s: string): string {
+  return `'${s.replace(/'/g, `'\\''`)}'`;
+}
+
+/** Escape text for an UNQUOTED heredoc, after JSON-escaping it. */
+function jsonHeredoc(s: string): string {
+  return JSON.stringify(s)
+    .slice(1, -1)
+    .replace(/[\\$`]/g, (c) => "\\" + c);
+}
+
+/* ------------------------------------------------------------------ */
+/* Load-header downloads                                               */
+/* ------------------------------------------------------------------ */
+
+function httpsOnly(url: string): string | null {
+  try {
+    const u = new URL(url);
+    return u.protocol === "https:" || u.protocol === "http:" ? u.href : null;
+  } catch {
+    return null;
+  }
+}
+
+function buildDownloadHeader(
+  media: string,
+  plugins: Array<[string, string, string]>,
+  options: string,
+): string {
+  const lines: string[] = [
+    `mkdir -p input output`,
+    // dl <url> <dest>: curl with retries, wget fallback, non-zero exit on failure
+    `dl() { curl -fsSL --retry 3 --connect-timeout 15 -o "$2" "$1" 2>/dev/null || wget -q -T 15 -O "$2" "$1"; }`,
+  ];
+
+  const m = httpsOnly(media);
+  if (m) {
+    lines.push(
+      `FILE_1="\${FILE_1:-input/media_$RANDOM}"`,
+      `[ -s "$FILE_1" ] || dl ${shq(m)} "$FILE_1" || { echo "Failed to download media" >&2; exit 1; }`,
+    );
+  }
+
+  for (const [needle, url, name] of plugins) {
+    if (!options.includes(needle)) continue;
+    const u = httpsOnly(url);
+    if (!u) continue;
+    lines.push(
+      `[ -s ${shq("./input/" + name)} ] || dl ${shq(u)} ${shq("./input/" + name)} || echo ${shq("Failed to download " + name)} >&2`,
+    );
+  }
+
+  return lines.join("\n") + "\n\n";
+}
+
+/* ------------------------------------------------------------------ */
+/* Builder                                                             */
+/* ------------------------------------------------------------------ */
+
+export function buildIcfPlus(ctx: IcfContext): IcfResult {
+  const { argv, rest } = parseArgs(ctx.args);
+
+  // {set:string|{eval:...}} -> user ffmpeg options, with unicode decoded.
+  // Inlined (not a variable) on purpose: filters containing | must reach
+  // ffmpeg inside the user's own quotes, same as the tagscript behaved.
+  const string = decodeUnicode(rest);
+
+  const exportsExpr = safeArith(argv[0] ?? "1", [], "1");
+  const durExpr = safeArith(argv[1] ?? "vidlen", ["vidlen"], "vidlen");
+  const noTrim = shq(decodeUnicode(argv[2] ?? "false"));
+  const inFmtArg = shq(decodeUnicode(argv[3] ?? "default"));
+  const outFmtArg = shq(decodeUnicode(argv[4] ?? "default"));
+
+  const tier = Number.isFinite(ctx.premiumTier) ? Number(ctx.premiumTier) : 0;
+  const unix = ctx.unix ?? Math.floor(Date.now() / 1000);
+
+  // {if:{indexof:./input/X|{get:string}}|!=|-1|then:load ...}
+  const loads: string[] = [`load ${ctx.media}`];
+  const plugins: Array<[string, string, string]> = [
+    ["./input/multipitch", "https://file.garden/aTXso15ukD3mnuPI/multipitch", "multipitch"],
+    ["./input/mp", "https://file.garden/aTXso15ukD3mnuPI/multipitch", "mp"],
+    ["./input/4orm", "https://file.garden/aRlNExn-C17HIWzw/4orm-VST", "4orm"],
+  ];
+  for (const [needle, url, name] of plugins) {
+    if (string.includes(needle)) loads.push(`load ${url} ${name}`);
+  }
+
+  const S = string; // shorthand for the inlined options
+
+  // `load <url> <name>` headers -> real downloads. Plugins land in ./input/<name>
+  // (the tagscript checks for ./input/multipitch etc.); the media goes to $FILE_1.
+  const header = (ctx.download ?? true) ? buildDownloadHeader(ctx.media, plugins, string) : "";
+  const isTrue = `[ "$no_trim" == "true" ] || [ "$no_trim" == "yes" ] || [ "$no_trim" == "+" ] || [ "$no_trim" == "1" ]`;
+  const isFalse = `[ "$no_trim" == "false" ] || [ "$no_trim" == "no" ] || [ "$no_trim" == "-" ] || [ "$no_trim" == "0" ]`;
+
+  const script = `${header}start=$(date +%s%3N)
+
+log=err_$RANDOM.log
+
+vidlen=$(ffprobe -i "$FILE_1" -show_entries format=duration -v quiet -of csv="p=0")
+
+# --- arithmetic: exports is a bash integer expression ---
+exports=$(( ${exportsExpr} ))
+abs_exports=$(( exports < 0 ? -exports : exports ))
+
+# --- arithmetic: duration is evaluated by awk, with vidlen available ---
+dur=$(awk -v vidlen="$vidlen" 'BEGIN{ printf "%s", (${durExpr}) }')
+
+no_trim=${noTrim}
+
+ffmpeg -loglevel error -hide_banner -y -stream_loop -1 -i "$FILE_1" -c:v utvideo -c:a pcm_s32le -t "$dur" -threads 0 -movflags +faststart 0.mov 2>/dev/null
+
+if [ ${inFmtArg} == 'default' ]; then
+   input_format=$(basename "\${FILE_1##*.}")
+else
+   input_format=${inFmtArg}
+fi
+
+if [ ${outFmtArg} == 'default' ]; then
+   output_format=$(basename "\${FILE_1##*.}")
+else
+   output_format=${outFmtArg}
+fi
+
+# Set up variables
+sr=$(ffprobe -v error -select_streams a:0 -show_entries stream=sample_rate -of default=nokey=1:noprint_wrappers=1 0.mov)
+fr=$(ffprobe -v error -select_streams v:0 -show_entries stream=r_frame_rate -of default=nokey=1:noprint_wrappers=1 0.mov)
+d=$(ffprobe -i 0.mov -show_entries format=duration -v quiet -of csv="p=0")
+w=$(ffprobe -v error -select_streams v:0 -show_entries stream=width -of default=nw=1:nk=1 0.mov)
+h=$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of default=nw=1:nk=1 0.mov)
+fc=$(ffprobe -v error -select_streams v:0 -show_entries stream=nb_frames -of default=nokey=1:noprint_wrappers=1 0.mov)
+
+output=./output/icfplus_${ctx.uuid.replace(/[^\w-]/g, "")}.$output_format
+
+# Render each export
+if ${isTrue}; then
+   for i in $(seq 1 $abs_exports); do
+      if [ $i == 1 ]; then
+         ffmpeg -loglevel error -hide_banner -y -i "0.mov" ${S} -movflags +faststart 1.$input_format 2> $log
+      else
+         ffmpeg -loglevel error -hide_banner -y -i "$((i-1)).$input_format" ${S} -movflags +faststart $i.$input_format 2>/dev/null
+      fi
+   done
+elif ${isFalse}; then
+   for i in $(seq 1 $abs_exports); do
+      if [ $i == 1 ]; then
+         ffmpeg -loglevel error -hide_banner -y -stream_loop 1 -i "0.mov" ${S} -t "$dur" -movflags +faststart 1.$input_format 2> $log
+      else
+         ffmpeg -loglevel error -hide_banner -y -stream_loop 1 -i "$((i-1)).$input_format" ${S} -t "$dur" -movflags +faststart $i.$input_format 2>/dev/null
+      fi
+   done
+fi
+
+# Build concat list
+if [ $exports -lt 0 ]; then
+   for i in $(seq $abs_exports -1 1); do
+      echo "file '$i.$input_format'"
+   done
+else
+   for i in $(seq 1 $abs_exports); do
+      echo "file '$i.$input_format'"
+   done
+fi >> concat.txt
+
+# Concat all exports
+case $output_format in
+   "mkv") ffmpeg -loglevel error -hide_banner -y -f concat -safe 0 -i "concat.txt" -c:v mpeg2video -q:v 1 -c:a flac -pix_fmt yuv420p -bufsize 16M -movflags +faststart -threads 0 $output 2>/dev/null;;
+   "mxf") ffmpeg -loglevel error -hide_banner -y -f concat -safe 0 -i "concat.txt" -c:v mpeg2video -qscale 1 -qmin 1 -c:a pcm_s16le -ar 48000 -pix_fmt yuv420p -bufsize 16M -movflags +faststart -threads 0 $output 2>/dev/null;;
+   "mov"|"mp4") ffmpeg -loglevel error -hide_banner -y -f concat -safe 0 -i "concat.txt" -c:v libx264 -profile:v high -level:v 5 -tune film -q:v 1 -crf 30 -g 9 -bf 0 -preset superfast -c:a aac -b:a 256K -pix_fmt yuv420p -bufsize 16M -movflags +faststart -threads 0 $output 2>/dev/null;;
+   "avi") ffmpeg -loglevel error -hide_banner -y -f concat -safe 0 -i "concat.txt" -c:v mpeg2video -c:a flac -pix_fmt yuv420p -movflags +faststart $output 2>/dev/null;;
+   "webm") ffmpeg -loglevel error -hide_banner -y -f concat -safe 0 -i "concat.txt" -pix_fmt yuv420p -movflags +faststart $output 2>/dev/null;;
+   *) ffmpeg -loglevel error -hide_banner -y -f concat -safe 0 -i "concat.txt" -pix_fmt yuv420p -bufsize 16M -movflags +faststart -threads 0 $output 2>/dev/null;;
+esac
+
+out_w=$(ffprobe -v error -select_streams v:0 -show_entries stream=width -of default=nw=1:nk=1 $output 2>/dev/null)
+out_h=$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of default=nw=1:nk=1 $output 2>/dev/null)
+out_fr_raw=$(ffprobe -v error -select_streams v:0 -show_entries stream=r_frame_rate -of default=nokey=1:noprint_wrappers=1 $output 2>/dev/null)
+out_fr=$(awk "BEGIN{ printf \\"%s\\", $out_fr_raw }" 2>/dev/null)
+out_d=$(ffprobe -i $output -show_entries format=duration -v quiet -of csv="p=0" 2>/dev/null)
+
+has_video=$(awk -v a="$(ffprobe -v error -select_streams v:0 -show_entries stream=index -of default=nokey=1:noprint_wrappers=1 $output 2>/dev/null)" 'BEGIN{ printf a==0 }' 2>/dev/null)
+
+file_size=$(stat -c%s "$output" 2>/dev/null || echo 0)
+
+tier=${tier}
+
+case $tier in
+   1) size_limit=$((20*(1024**2)));;
+   2) size_limit=$((50*(1024**2)));;
+   3) size_limit=$((100*(1024**2)));;
+   *) size_limit=$((20*(1024**2)));;
+esac
+
+if [ $file_size -gt $size_limit ]; then
+   echo "File is too large for Discord ($(awk -v f="$file_size" 'BEGIN{ printf "%.2f", f/1048576 }') MB/$((size_limit/(1024**2))) MB)" >&2
+fi
+
+if [ $file_size -ge 1048576 ]; then
+   fs=$(awk -v f="$file_size" 'BEGIN{ printf "%.2f", f/1048576 }')' MB'
+else
+   fs=$(awk -v f="$file_size" 'BEGIN{ printf "%.2f", f/1024 }')' KB'
+fi
+
+end=$(date +%s%3N)
+
+if [ -f "$output" ]; then
+cat <<EOF
+{"pages":[{"embed":{"author":{"icon_url":"${jsonHeredoc(ctx.avatar)}","name":"${jsonHeredoc(ctx.usertag)}"},"color":4224,"fields":[{"name":"Reminder:","value":"Make sure you use \\\`.t sync+\\\` or \\\`.t sync+ alt\\\` afterwards to make sure the video is synced to the audio"},{"name":"Exports:","value":"$exports"},{"name":"Export Length:","value":"\${dur}s"},{"name":"Total Length:","value":"\${out_d}s"},{"name":"No Trim?","value":"$(if ${isTrue}; then echo "✅"; elif ${isFalse}; then echo "❌"; fi)"},{"name":"File Info:","value":"\${fs}$(if [ "$has_video" == 1 ]; then echo ", \${out_w}x\${out_h}, $out_fr fps"; fi)"},{"name":"Debug:","value":"Took $(awk -v start="$start" -v end="$end" 'BEGIN{ printf "%.3f", (end-start)/1000 }')s to execute ($(awk -v start="${unix}000" -v end="$end" 'BEGIN{ printf "%.3f", (end-start)/1000 }')s in total), ${jsonHeredoc(String(ctx.iterationsRemaining ?? "?"))} tagscript operations left"}],"footer":{"text":"534!ihtxplus"},"timestamp":"$(date)","type":"rich"}}]}
+EOF
+else
+   cat >&2 "$log"
+fi
+
+# Cleanup
+rm -f *."$input_format" concat.txt 0.mov 0.mp4
+`;
+
+  return { loads, script };
+}
+
+/* ------------------------------------------------------------------ */
+/* Example                                                             */
+/* ------------------------------------------------------------------ */
+
+if (require.main === module) {
+  const { loads, script } = buildIcfPlus({
+    args: String.raw`2*2 vidlen/2 false default mp4 -af "atempo=1.5\u007caresample=44100"`,
+    media: "https://example.com/video.mp4",
+    uuid: "abc123",
+    avatar: "https://example.com/a.png",
+    usertag: "user#0001",
+    premiumTier: 1,
+  });
+  console.log(loads.join("\n"));
+  console.log(script);
+}
